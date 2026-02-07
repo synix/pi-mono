@@ -86,6 +86,7 @@ const claudeCodeTools = [
 	"WebSearch",
 ];
 
+// 👇 确保无论 Claude 返回什么大小写形式，都能正确映射回用户定义的工具，避免因大小写不匹配导致的工具执行失败。
 const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
 
 // Convert tool name to CC canonical casing if it matches (case-insensitive)
@@ -225,12 +226,30 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			);
 			const params = buildParams(model, context, isOAuthToken, options);
 			options?.onPayload?.(params);
+			// !!这里是最终调用 Anthropic SDK 发起流式请求的地方
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
+			// 发出'start'事件, 流式请求已经开始
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
+			// 处理来自 Anthropic SDK 的流式事件，转换成我们内部的 AssistantMessageEvent 格式，并更新 output 对象的状态。
+			// See https://platform.claude.com/docs/en/build-with-claude/streaming#event-types
+			/*
+				事件流结构👇
+
+				message_start
+				├── content_block_start (index 0)
+				│   ├── content_block_delta (text_delta)
+				│   ├── content_block_delta (text_delta)
+				│   └── content_block_stop
+				├── content_block_start (index 1, tool_use)
+				│   ├── content_block_delta (input_json_delta)
+				│   └── content_block_stop
+				├── message_delta (stop_reason, usage)
+				└── message_stop
+			*/
 			for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
 					// Capture initial token usage from message_start event
@@ -276,6 +295,19 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
+					/*
+					    ┌─────────────────┬──────────────────────────────────────────────┐
+						│      变量        │                     含义                     │
+						├─────────────────┼──────────────────────────────────────────────┤
+						│ event.index     │ Anthropic 返回的原始内容块编号（可能不连续）       │
+						├─────────────────┼──────────────────────────────────────────────┤
+						│ blocks 数组下标   │ 本地存储的内容块位置（连续的 0, 1, 2...）         │
+						├─────────────────┼──────────────────────────────────────────────┤
+						│ block.index     │ 该 block 对应的 Anthropic 原始编号              │
+						└─────────────────┴──────────────────────────────────────────────┘
+						下面 findIndex 用来桥接这两个不同的索引体系
+					 */
+
 					if (event.delta.type === "text_delta") {
 						const index = blocks.findIndex((b) => b.index === event.index);
 						const block = blocks[index];
@@ -786,6 +818,7 @@ function convertTools(tools: Tool[], isOAuthToken: boolean): Anthropic.Messages.
 }
 
 function mapStopReason(reason: Anthropic.Messages.StopReason | string): StopReason {
+	// Map Anthropic's stop reasons to our standardized stop reasons
 	switch (reason) {
 		case "end_turn":
 			return "stop";

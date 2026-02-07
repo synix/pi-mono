@@ -274,6 +274,12 @@ export class Agent {
 		this.followUpQueue = [];
 	}
 
+	/**
+	 * 调用链
+	 * agent.prompt()/agent.continue() -> _runLoop() -> agentLoop() / agentLoopContinue() -> stream of AgentEvent
+	 * Agent 会根据AgentEvent事件更新内部状态, 并通过 this.emit() 将事件通知给所有订阅者。
+	 */
+
 	/** Send a prompt with an AgentMessage */
 	async prompt(message: AgentMessage | AgentMessage[]): Promise<void>;
 	async prompt(input: string, images?: ImageContent[]): Promise<void>;
@@ -316,6 +322,7 @@ export class Agent {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
 
+		// 已经有 message history 并且最后一条message是user message 才能 continue,
 		const messages = this._state.messages;
 		if (messages.length === 0) {
 			throw new Error("No messages to continue from");
@@ -345,6 +352,7 @@ export class Agent {
 		this._state.streamMessage = null;
 		this._state.error = undefined;
 
+		// 是否开启了推理
 		const reasoning = this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel;
 
 		const context: AgentContext = {

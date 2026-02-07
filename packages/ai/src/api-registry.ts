@@ -22,7 +22,11 @@ export type ApiStreamSimpleFunction = (
 
 export interface ApiProvider<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> {
 	api: TApi;
+	// 底层，需了解 Anthropic SDK 调用细节, 比如在 streamAnthropic() 中, options类型也就是 TOptions 是 AnthropicOptions
 	stream: StreamFunction<TApi, TOptions>;
+	// 高层封装，跨 provider 统一接口, options类型是统一的 SimpleStreamOptions
+	// 一般来说，streamSimple会将options转换成上面stream需要的TOptions类型，然后调用stream函数。
+	// 比如在 streamSimpleAnthropic() 中，streamSimple会把 SimpleStreamOptions 转换成 AnthropicOptions，然后调用 streamAnthropic()。
 	streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
 }
 

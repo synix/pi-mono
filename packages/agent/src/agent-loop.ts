@@ -115,12 +115,13 @@ async function runLoop(
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
-		let hasMoreToolCalls = true;
+		let hasMoreToolCalls = true; // 初始值为true，确保下面的while循环至少运行一次
 		let steeringAfterTools: AgentMessage[] | null = null;
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			if (!firstTurn) {
+				// 为什么第一轮不发送? 因为在调用 runLoop() 前已经发送了 agent_start 和 turn_start 事件
 				stream.push({ type: "turn_start" });
 			} else {
 				firstTurn = false;
@@ -129,10 +130,10 @@ async function runLoop(
 			// Process pending messages (inject before next assistant response)
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
-					stream.push({ type: "message_start", message });
-					stream.push({ type: "message_end", message });
-					currentContext.messages.push(message);
-					newMessages.push(message);
+					stream.push({ type: "message_start", message }); // 面向UI
+					stream.push({ type: "message_end", message }); // 面向UI
+					currentContext.messages.push(message); // 面向LLM, 即上下文
+					newMessages.push(message); // 将本次agent loop新增的message存入newMessages数组, 以便在agent_end事件后一次性返回
 				}
 				pendingMessages = [];
 			}
@@ -142,8 +143,8 @@ async function runLoop(
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				stream.push({ type: "turn_end", message, toolResults: [] });
-				stream.push({ type: "agent_end", messages: newMessages });
+				stream.push({ type: "turn_end", message, toolResults: [] }); // 面向UI
+				stream.push({ type: "agent_end", messages: newMessages }); // 面向UI
 				stream.end(newMessages);
 				return;
 			}
@@ -224,6 +225,7 @@ async function streamAssistantResponse(
 		tools: context.tools,
 	};
 
+	// 缺省情况下，使用 packages/ai/src/providers/register-builtins.ts 中注册的 streamSimple 作为默认的流式请求函数
 	const streamFunction = streamFn || streamSimple;
 
 	// Resolve API key (important for expiring tokens)
@@ -239,12 +241,14 @@ async function streamAssistantResponse(
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 
+	// 这个for循环算是整个agent loop中最核心的部分了，负责处理LLM流式请求返回的AssistantMessageEvent事件，并根据事件类型更新上下文和发出相应的AgentEvent事件
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
+				// 面向UI
 				stream.push({ type: "message_start", message: { ...partialMessage } });
 				break;
 
@@ -260,6 +264,7 @@ async function streamAssistantResponse(
 				if (partialMessage) {
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
+					// 面向UI
 					stream.push({
 						type: "message_update",
 						assistantMessageEvent: event,
@@ -277,8 +282,10 @@ async function streamAssistantResponse(
 					context.messages.push(finalMessage);
 				}
 				if (!addedPartial) {
+					// 面向UI
 					stream.push({ type: "message_start", message: { ...finalMessage } });
 				}
+				// 面向UI
 				stream.push({ type: "message_end", message: finalMessage });
 				return finalMessage;
 			}

@@ -4,6 +4,7 @@ import type { Api, KnownProvider, Model, Usage } from "./types.js";
 const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
 // Initialize registry from MODELS on module load
+// 在模块加载时从 MODELS 初始化 modelRegistry: provider -> modelId -> Model
 for (const [provider, models] of Object.entries(MODELS)) {
 	const providerModels = new Map<string, Model<Api>>();
 	for (const [id, model] of Object.entries(models)) {
@@ -36,6 +37,7 @@ export function getModels<TProvider extends KnownProvider>(
 	return models ? (Array.from(models.values()) as Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[]) : [];
 }
 
+// 计算出来的单位是美元($)
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
 	usage.cost.input = (model.cost.input / 1000000) * usage.input;
 	usage.cost.output = (model.cost.output / 1000000) * usage.output;

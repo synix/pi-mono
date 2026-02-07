@@ -2,6 +2,7 @@ import type { AssistantMessageEventStream } from "./utils/event-stream.js";
 
 export type { AssistantMessageEventStream } from "./utils/event-stream.js";
 
+// 表示调用模型时使用的API类型
 export type KnownApi =
 	| "openai-completions"
 	| "openai-responses"
@@ -13,8 +14,13 @@ export type KnownApi =
 	| "google-gemini-cli"
 	| "google-vertex";
 
+// Api 是一个类型定义，表示所有可能的 API 类型：
+//  - KnownApi - 已知的、有类型提示的 API 类型
+//  - (string & {}) - 允许任意字符串（用于扩展性），但不会破坏自动补全
+// 这个 (string & {}) 是一个 TypeScript 技巧，让类型既能接受任意字符串，又能在 IDE 中提供已知值的自动补全。
 export type Api = KnownApi | (string & {});
 
+// 目前支持的provider列表
 export type KnownProvider =
 	| "amazon-bedrock"
 	| "anthropic"
@@ -38,6 +44,7 @@ export type KnownProvider =
 	| "huggingface"
 	| "opencode"
 	| "kimi-coding";
+
 export type Provider = KnownProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
