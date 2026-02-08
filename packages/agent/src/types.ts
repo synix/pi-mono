@@ -22,6 +22,12 @@ export type StreamFn = (
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 
+	/*
+		convertToLlm(必需配置项): 过滤自定义消息类型
+		- 通过 `CustomAgentMessages` 声明合并（declaration merging）注入的 app 专属消息类型不会发给 LLM
+		- 只保留 user/assistant/toolResult message
+	 */
+
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.
 	 *
@@ -46,6 +52,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * ```
 	 */
 	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+
+	/*
+		transformContext(可选配置项): 用于上下文裁剪/摘要/注入, 控制 token 消耗
+		- 消息裁剪/截断（长对话场景）
+		- 中间消息摘要压缩
+		- 外部上下文注入(RAG、知识库)
+		- 消息去重
+	*/
 
 	/**
 	 * Optional transform applied to the context before `convertToLlm`.
@@ -141,6 +155,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
  */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+// 应用层可以通过 declaration merging 扩展消息类型
+// 自定义消息类型会出现在 `AgentState.messages` 中(面向UI) 但会被 `convertToLlm()` 过滤掉(不发给 LLM)
+
 /**
  * Extensible interface for custom app messages.
  * Apps can extend via declaration merging:
@@ -156,6 +173,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * ```
  */
 export interface CustomAgentMessages {
+	// 应用在这里添加自定义消息类型
 	// Empty by default - apps extend via declaration merging
 }
 
@@ -195,23 +213,27 @@ export interface AgentState {
 
 export interface AgentToolResult<T> {
 	// Content blocks supporting text and images
-	content: (TextContent | ImageContent)[];
+	content: (TextContent | ImageContent)[]; // 发回给 LLM 的内容
 	// Details to be displayed in a UI or logged
-	details: T;
+	details: T; // 给 UI 展示的额外信息（不发给 LLM）
 }
 
 // Callback for streaming tool execution updates
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
+// TDetails 控制工具调用的附加输出类型, 流经整个结果链:
+// 比如一个文件搜索工具, content 是搜索结果文本 (LLM 看到),details 可以是 { matchCount: number, files: string[] } 这种结构化数据(UI 渲染用)
+// onUpdate 回调也用同样的 TDetails 类型，支持流式更新进度
+
 // AgentTool extends Tool but adds the execute function
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	// A human-readable label for the tool to be displayed in UI
-	label: string;
+	label: string; // 面向UI
 	execute: (
-		toolCallId: string,
-		params: Static<TParameters>,
-		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<TDetails>,
+		toolCallId: string, // LLM 返回的 toolcall id, 用于关联 LLM工具调用 和 实际工具代码执行 的结果
+		params: Static<TParameters>, // ← 关键：TypeBox 把 Schema 变成了类型安全的 TS 对象
+		signal?: AbortSignal, // 用于工具执行过程中被外部中断（如用户取消）
+		onUpdate?: AgentToolUpdateCallback<TDetails>, // 流式进度回调
 	) => Promise<AgentToolResult<TDetails>>;
 }
 

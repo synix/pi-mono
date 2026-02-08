@@ -16,6 +16,10 @@ import {
 	type ToolCall,
 } from "@mariozechner/pi-ai";
 
+// 🚀 实现了proxy(代理)模式
+
+// 对比 packages/ai/src/utils/event-stream.ts 中的 AssistantMessageEventStream
+
 // Create stream class matching ProxyMessageEventStream
 class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
@@ -29,6 +33,29 @@ class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, Assista
 		);
 	}
 }
+
+/*
+	对比 packages/ai/src/types.ts 中的 AssistantMessageEvent
+	核心区别就一个: ProxyAssistantMessageEvent 去掉了所有 partial 字段
+	每个事件都少了 partial (累积的完整消息快照), 这是带宽优化 — partial 是一个不断增长的对象, 每个 delta事件都带上完整快照会造成大量重复传输
+
+	客户端收到 ProxyAssistantMessageEvent 后，通过下面的 processProxyEvent() 函数在本地维护一个 partial 对象，把 delta 逐步拼接上去，重建出完整的 AssistantMessageEvent:
+
+	服务端                          网络                          客户端
+  AssistantMessageEvent    →   去掉 partial    →    ProxyAssistantMessageEvent
+  (带 partial 快照)             节省带宽              收到后本地重建 partial
+                                                           ↓
+                                                    processProxyEvent()
+                                                    拼接 delta 到本地 partial
+                                                           ↓
+                                                    还原为 AssistantMessageEvent
+
+	另外还有两个小差异：
+		- text_end / thinking_end：原版带 content: string（完整文本），代理版只带可选的 contentSignature
+		- toolcall_start：原版只有 contentIndex + partial，代理版额外传了 id 和 toolName（因为没有 partial，客户端需要这些信息来初始化 toolCall 对象）
+		- done：原版带 message: AssistantMessage（完整消息），代理版只带 usage（客户端已经自己拼出了完整消息）
+
+*/
 
 /**
  * Proxy event types - server sends these with partial field stripped to reduce bandwidth.
@@ -118,6 +145,8 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 		}
 
 		try {
+			// `${options.proxyUrl}/api/stream` 服务端endpoint的职责是:
+			// 接收这个请求，用自己的 API key 去调用真正的 LLM(Anthropic/OpenAI 等), 把 LLM返回的流式事件剥离 partial 字段后, 以 SSE 格式转发回来
 			const response = await fetch(`${options.proxyUrl}/api/stream`, {
 				method: "POST",
 				headers: {
@@ -170,6 +199,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 						const data = line.slice(6).trim();
 						if (data) {
 							const proxyEvent = JSON.parse(data) as ProxyAssistantMessageEvent;
+							// 将 ProxyAssistantMessageEvent 复原成 AssistantMessageEvent，并更新 partial
 							const event = processProxyEvent(proxyEvent, partial);
 							if (event) {
 								stream.push(event);
@@ -294,6 +324,7 @@ function processProxyEvent(
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
 				(content as any).partialJson += proxyEvent.delta;
+				// 工具参数的增量重建
 				content.arguments = parseStreamingJson((content as any).partialJson) || {};
 				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
 				return {

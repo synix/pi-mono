@@ -211,10 +211,12 @@ async function streamAssistantResponse(
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
+	// 👇 可选，上下文裁剪/摘要/注入
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
 
+	// 👇 必需，过滤自定义消息类型
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
 	const llmMessages = await config.convertToLlm(messages);
 
@@ -367,6 +369,8 @@ async function executeToolCalls(
 		stream.push({ type: "message_start", message: toolResultMessage });
 		stream.push({ type: "message_end", message: toolResultMessage });
 
+		// 👇 每个工具执行完后检查 `getSteeringMessages()`，如果有消息则跳过剩余工具
+
 		// Check for steering messages - skip remaining tools if user interrupted
 		if (getSteeringMessages) {
 			const steering = await getSteeringMessages();
@@ -384,6 +388,8 @@ async function executeToolCalls(
 	return { toolResults: results, steeringMessages };
 }
 
+// 这里实现了工具的跳过机制
+// 被跳过的工具返回 `"Skipped due to queued user message"`
 function skipToolCall(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	stream: EventStream<AgentEvent, AgentMessage[]>,

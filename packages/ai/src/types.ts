@@ -185,12 +185,33 @@ export interface ToolResultMessage<TDetails = any> {
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
+/*
+	💀 @sinclair/typebox 的 TSchema / Static<T> 魔法
+	这是 @sinclair/typebox (https://github.com/sinclairzx81/typebox) 这个类型设计最精妙的地方
+	typebox 让同一份定义既是 runtime 的 JSON Schema (给 LLM)又是 compile-time 的TypeScript类型 (给开发者):
+
+	举个例子:
+	const FileReadParams = Type.Object({
+		path: Type.String(),
+		offset: Type.Optional(Type.Number()),
+	});
+
+	// Runtime: FileReadParams是标准 JSON Schema(发给 LLM)
+	// { type: "object", properties: { path: { type: "string" }, ... } }
+
+	// Compile-time: Static<typeof FileReadParams> 推导出TypeScript类型
+	// { path: string; offset?: number }
+
+	TSchema 来自 @sinclair/typebox 库（第 12 行），它是 TypeBox 中所有 JSON Schema 类型的基类型/顶层类型。
+	也就是说, TSchema 是 TypeBox 的类型层级根节点，代表"任意 JSON Schema"。所有 TypeBox 构造器（Type.String(), Type.Object({...}) 等）返回的值都满足 TSchema。
+ */
+
 import type { TSchema } from "@sinclair/typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
-	name: string;
-	description: string;
-	parameters: TParameters;
+	name: string; // 面向LLM的tool name
+	description: string; // 面向LLM的tool description
+	parameters: TParameters; // JSON Schema for tool parameters, 面向LLM的tool参数定义
 }
 
 export interface Context {

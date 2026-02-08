@@ -101,11 +101,20 @@ export class Agent {
 	};
 
 	private listeners = new Set<(e: AgentEvent) => void>();
+	/*
+	  每次 `_runLoop()` 创建新的, signal 贯穿整条调用链
+  		- `streamAssistantResponse()` 的 LLM 请求
+  		- 每个 `tool.execute()` 的执行
+	 */
 	private abortController?: AbortController;
 	private convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	private transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	// 通过 `steer()` 入队，由 `getSteeringMessages()` 出队
 	private steeringQueue: AgentMessage[] = [];
+	// 通过 `followUp()` 入队，由 `getFollowUpMessages()` 出队
 	private followUpQueue: AgentMessage[] = [];
+	//   - `"one-at-a-time"`(默认): 每次只从队列取一条消息
+	//   - `"all"`: 一次清空整个队列
 	private steeringMode: "all" | "one-at-a-time";
 	private followUpMode: "all" | "one-at-a-time";
 	public streamFn: StreamFn;
@@ -120,6 +129,7 @@ export class Agent {
 		this._state = { ...this._state, ...opts.initialState };
 		this.convertToLlm = opts.convertToLlm || defaultConvertToLlm;
 		this.transformContext = opts.transformContext;
+		// steeringMode 和 followUpMode 的默认值是 "one-at-a-time", 即逐条处理, 用户可以根据需要切换到 "all" 模式以获得更快的响应
 		this.steeringMode = opts.steeringMode || "one-at-a-time";
 		this.followUpMode = opts.followUpMode || "one-at-a-time";
 		this.streamFn = opts.streamFn || streamSimple;
@@ -290,10 +300,29 @@ export class Agent {
 		this._state.messages = [];
 	}
 
+	/*
+	  调用 `abortController.abort()` 触发：
+		- LLM 流取消
+		- 工具执行中断
+		- proxy 模式下 `reader.cancel()`
+		- stopReason 设为 `"aborted"`
+
+	  链路是：
+		abort() → abortController.abort() → signal.aborted = true
+													↓
+										下游操作抛异常（fetch 中断 / reader 取消）
+													↓
+										catch 块检查 signal.aborted
+													↓
+										是 true → stopReason = "aborted"
+										是 false → stopReason = "error"
+	
+	 */
 	abort() {
 		this.abortController?.abort();
 	}
 
+	// 等待 agent 完成当前处理(isStreaming=false 且 pendingToolCalls 为空)
 	waitForIdle(): Promise<void> {
 		return this.runningPrompt ?? Promise.resolve();
 	}
@@ -517,6 +546,7 @@ export class Agent {
 					totalTokens: 0,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				},
+				// 调用 abort() 后，signal 变为 aborted 状态，LLM 调用或工具执行抛异常，catch 里检查 signal 来区分是用户主动中断还是真正的错误
 				stopReason: this.abortController?.signal.aborted ? "aborted" : "error",
 				errorMessage: err?.message || String(err),
 				timestamp: Date.now(),
