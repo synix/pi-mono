@@ -14,10 +14,23 @@ export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOption
 	};
 }
 
+// 不支持 xhigh 的模型自动降级: `xhigh → high`
 export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh"> | undefined {
 	return effort === "xhigh" ? "high" : effort;
 }
 
+/*
+为 extended thinking 预留 token 预算：
+
+| ThinkingLevel | 预算 (tokens) |
+|---------------|--------------|
+| minimal | 1,024 |
+| low | 2,048 |
+| medium | 8,192 |
+| high | 16,384 |
+
+确保 output tokens 有最低保障 (thinking 预算不能挤占全部 maxTokens)
+*/
 export function adjustMaxTokensForThinking(
 	baseMaxTokens: number,
 	modelMaxTokens: number,
