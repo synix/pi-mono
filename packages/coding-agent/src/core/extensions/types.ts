@@ -352,6 +352,36 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	renderResult?: (result: AgentToolResult<TDetails>, options: ToolRenderResultOptions, theme: Theme) => Component;
 }
 
+/*
+  💥 Extension 的 event handlers 支持的22种事件:
+  + 资源发现: resources_discover
+  + session生命周期事件(10种): 
+  	 session_start
+	 session_before_switch
+	 session_switch
+	 session_before_fork
+	 session_fork
+	 session_before_compact
+	 session_compact
+	 session_before_tree
+	 session_tree
+	 session_shutdown
+  + agent事件(6种):
+     context
+	 before_agent_start
+	 agent_start
+	 agent_end
+	 turn_start
+	 turn_end
+  + tool事件(2种):
+	 tool_call
+	 tool_result
+  + 用户输入事件(3种):
+     input
+	 user_bash
+	 model_select
+ */
+
 // ============================================================================
 // Resource Events
 // ============================================================================
@@ -1246,15 +1276,47 @@ export interface ExtensionCommandContextActions {
  */
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
 
+/*
+   👇一个extension文件通过上面 ExtensionAPI 的注册方法 (registerTool、registerCommand、on等)往
+   Extension 的 6个Map 里填数据，加载完成后这个 Extension 对象就是该extension所有能力的完整清单
+*/
+
 /** Loaded extension with all registered items. */
 export interface Extension {
+	// 原始路径（用户配置的）
 	path: string;
+
+	// 解析后的绝对路径
 	resolvedPath: string;
+
+	// event handlers
+	// key是事件名(如 "context", "user_bash", "beforePrompt")
+	// 值是函数数组(同一事件可注册多个 handler)
 	handlers: Map<string, HandlerFn[]>;
+
+	// 自定义工具
+	// key 是工具名, 值包含ToolDefinition(name/description/parameters/execute)
+	// 注册后和内置工具(read/bash/edit/write)一样被 LLM 调用
 	tools: Map<string, RegisteredTool>;
+
+	// 自定义message renderer
+	// key 是 customType
+	// 当 TUI 遇到 CustomMessage 且 customType 匹配时, 用这个renderer画 UI
 	messageRenderers: Map<string, MessageRenderer>;
+
+	// slash command
+	// key 是command name(不含 /)
+	// 用户输入 /xxx 时匹配并执行 RegisteredCommand 中的 handler
 	commands: Map<string, RegisteredCommand>;
+
+	// 功能开关
+	// extension 可以注册 boolean/string 类型的 flag
+	// 在 /settings 里显示， 用户可以开关
 	flags: Map<string, ExtensionFlag>;
+
+	// 快捷键绑定
+	// key 是按键标识(如 "ctrl+k")
+	// 用户按下快捷键时执行 RegisteredShortcut 中的 handler
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 }
 

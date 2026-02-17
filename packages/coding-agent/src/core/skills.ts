@@ -99,12 +99,12 @@ export interface SkillFrontmatter {
 	[key: string]: unknown; // 允许其他自定义字段（如 license、metadata 等）
 }
 
-/** 加载后的 Skill 对象，包含完整的元数据 */
+// 加载后的 Skill 对象，包含Skill完整的元数据
 export interface Skill {
-	name: string; // 技能名称（用于 /skill:name 命令和系统提示中的标识）
-	description: string; // 技能描述（告诉 agent 何时使用这个技能）
+	name: string; // skill name (用于 /skill:name 斜杠命令和系统提示中的标识)
+	description: string; // skill description（告诉 agent 何时使用这个技能）
 	filePath: string; // SKILL.md 文件的绝对路径
-	baseDir: string; // 技能所在目录（用于解析技能文件中的相对路径引用）
+	baseDir: string; // 技能所在目录 (用于解析技能文件中的相对路径引用)
 	source: string; // 来源标识："user"（全局）、"project"（项目级）、"path"（显式指定）
 	disableModelInvocation: boolean; // 是否禁止模型自动调用
 }

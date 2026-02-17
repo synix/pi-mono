@@ -211,6 +211,8 @@ async function streamAssistantResponse(
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
+	// 💣 注意: transformContext和convertToLlm的调用次序和可选性
+
 	// 👇 可选，上下文裁剪/摘要/注入
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);

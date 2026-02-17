@@ -5,9 +5,15 @@
  * from cwd and ~/.pi/agent. Model chosen from settings or first available.
  */
 
+import { getModel } from "@mariozechner/pi-ai";
 import { createAgentSession } from "@mariozechner/pi-coding-agent";
 
-const { session } = await createAgentSession();
+// 运行:
+// OPENROUTER_API_KEY=sk-or-xxx npx tsx examples/sdk/01-minimal.ts
+
+const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+
+const { session } = await createAgentSession({ model });
 
 session.subscribe((event) => {
 	if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {

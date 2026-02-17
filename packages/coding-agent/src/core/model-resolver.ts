@@ -288,6 +288,22 @@ export async function findInitialModel(options: {
 		return { model: found, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
 	}
 
+	/*
+		👇 scopedModels 是通过 CLI 的 --models 参数指定的可选模型范围，用于 TUI 里 Ctrl+P 快捷键切换模型
+		参考 packages/coding-agent/src/core/sdk.ts 里 CreateAgentSessionOptions 对 scopedModels 的代码注释。
+
+		比如启动时: pi --models "anthropic/claude-sonnet-4:high,openai/gpt-4o"
+
+		会解析成：
+		scopedModels = [
+			{ model: claude-sonnet-4, thinkingLevel: "high" },
+			{ model: gpt-4o, thinkingLevel: undefined },
+		]
+
+		在这里，如果是新会话（!isContinuing），会用 scopedModels[0] 作为初始模型。恢复旧会话时跳过，因为应该优先恢复会话里保存的模型。
+		sdk.ts 里传的是空数组 scopedModels: []，因为 SDK 调用不走 CLI，没有 --models 参数。
+	*/
+
 	// 2. Use first model from scoped models (skip if continuing/resuming)
 	if (scopedModels.length > 0 && !isContinuing) {
 		return {
@@ -296,6 +312,8 @@ export async function findInitialModel(options: {
 			fallbackMessage: undefined,
 		};
 	}
+
+	// 👇 defaultProvider/defaultModelId/defaultThinkingLevel 均来自于 settingsManager
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
@@ -308,6 +326,15 @@ export async function findInitialModel(options: {
 			return { model, thinkingLevel, fallbackMessage: undefined };
 		}
 	}
+
+	/*
+		👇 这是 findInitialModel 的最后一步兜底逻辑：前面所有方式（CLI 指定、scopedModels、settings默认值）都没找到模型时执行。
+			1. 拿到所有有 API key 的可用模型
+			2. 按预设的 provider 优先级，找每个 provider 的"推荐模型"
+			3. 第一个匹配到的就用它
+			4. 如果连推荐模型都没匹配（比如用户只配了个冷门 provider），就用 availableModels[0]，随便选一个能用的
+		本质就是：用户什么都没配，给他一个合理的默认模型。provider 的遍历顺序决定了优先级——排在defaultModelPerProvider 前面的 provider 优先被选中。
+	*/
 
 	// 4. Try first available model with valid API key
 	const availableModels = await modelRegistry.getAvailable();

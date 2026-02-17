@@ -101,6 +101,9 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	};
 }
 
+/**
+ * 在 AgentEvent 4大类型事件 和 10大事件的基础上, 增加了 2大类型(auto_compaction/auto_retry) 和 4大事件
+ */
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -198,6 +201,13 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 
 /** Thinking levels including xhigh (for supported models) */
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/*
+	🤔  AgentSession 和 SessionManager 有什么区别？
+	两层不同的职责:
+	1. AgentSession — 编排层，管整个session的生命周期
+	2. SessionManager — 纯数据层，只管session的持久化
+ */
 
 // ============================================================================
 // AgentSession Class
@@ -652,6 +662,14 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		/*
+			👇 只处理了 extension command 这1种slash command
+			如果用户输入的 /xxx 匹配到extension注册的命令，就立即执行并 return，不走后续的 prompt() 流程。
+			变量名 expandPromptTemplates 容易误导，但它在这里只是个开关——控制是否要解析 /开头的输入。
+			prompt template 和 skill 的处理在后续代码里，不在这段。
+		*/
+
+		// expandPromptTemplates 实际控制的是"是否解析所有 / 开头的输入"（包括 extension command），名不副实。
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
 		// Handle extension commands first (execute immediately, even during streaming)
@@ -667,12 +685,17 @@ export class AgentSession {
 		// Emit input event for extension interception (before skill/template expansion)
 		let currentText = text;
 		let currentImages = options?.images;
+
 		if (this._extensionRunner?.hasHandlers("input")) {
 			const inputResult = await this._extensionRunner.emitInput(
 				currentText,
 				currentImages,
 				options?.source ?? "interactive",
 			);
+			/*
+				某个extension返回了 "handled"，表示它已经完全处理了这条输入，不需要再发给 LLM 了，直接 return 结束 prompt() 流程。
+  				比如extension自己实现了某个命令解析，用户输入被extension消费掉了，就不需要再走后续的 agent loop了。
+			*/
 			if (inputResult.action === "handled") {
 				return;
 			}
@@ -789,6 +812,8 @@ export class AgentSession {
 		}
 
 		await this.agent.prompt(messages);
+		//  如果没有重试在进行（_retryPromise 是 undefined），立即返回，不阻塞。
+		//   这样保证 prompt() 方法返回时，重试流程一定已经结束，调用方拿到的是最终结果。
 		await this.waitForRetry();
 	}
 
@@ -1511,8 +1536,34 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+		/*
+			💥 检查 LLM 回复后是否需要压缩上下文，两种触发条件：
+
+			Case 1: Overflow(溢出)
+				LLM 报了 context overflow 错误
+				→ 删掉错误消息 → 立即压缩 → 自动重试请求
+
+			Case 2: Threshold(阈值)
+				请求成功了，但 token 用量接近上下文窗口上限
+				→ 后台压缩 → 不重试（用户继续手动操作）
+
+			还有几个防御性检查：
+				- compaction 被禁用 → 跳过
+				- 用户取消了（aborted）→ 跳过
+				- 切换了模型后旧模型的错误 → 跳过（新模型窗口可能更大）
+				- 错误发生在已压缩区域之前 → 跳过（避免重复压缩）
+		*/
+
+		// compaction 被禁用 → 跳过
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return;
+
+		/*
+			用户按了取消（比如 Ctrl+C），LLM 回复被中断，stopReason 就是"aborted"。这时候不需要检查压缩——用户主动中断的，不是上下文满了。
+			skipAbortedCheck 参数控制是否跳过这个检查：
+				- true（默认，agent_end 之后调用）→ 跳过 aborted 的消息，不检查压缩
+				- false（prompt 提交前调用）→ 即使上一条是 aborted也要检查，因为用户要发新消息了，得确保上下文够用
+		 */
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
@@ -1541,6 +1592,7 @@ export class AgentSession {
 			// but we don't want it in context for the retry)
 			const messages = this.agent.state.messages;
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+				// 去掉数组最后一个元素，返回剩余部分。
 				this.agent.replaceMessages(messages.slice(0, -1));
 			}
 			await this._runAutoCompaction("overflow", true);
@@ -1549,6 +1601,9 @@ export class AgentSession {
 
 		// Case 2: Threshold - turn succeeded but context is getting large
 		// Skip if this was an error (non-overflow errors don't have usage data)
+
+		// 如果 LLM 返回了非 overflow 的错误（比如 API 500、网络错误等），跳过阈值检查。
+		// 因为出错的响应没有有效的 usage 数据（token用量），无法判断上下文是否接近上限，所以直接跳过。
 		if (assistantMessage.stopReason === "error") return;
 
 		const contextTokens = calculateContextTokens(assistantMessage.usage);
@@ -2036,6 +2091,12 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
+
+		/*
+			LLM API 服务器过载，暂时无法处理请求。Anthropic API 返回 HTTP 529 状态码，错误类型为overloaded_error。
+  			意思是 Anthropic 的服务器太忙了（请求量太大），让你稍后再试。和 429（rate limit，你个人的请求频率超限）不同，529 是服务端整体负载的问题。
+		*/
+
 		// Match: overloaded_error, rate limit, 429, 500, 502, 503, 504, service unavailable, connection errors, fetch failed, terminated, retry delay exceeded
 		return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server error|internal error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay/i.test(
 			err,
@@ -2072,6 +2133,14 @@ export class AgentSession {
 			return false;
 		}
 
+		/*
+			指数退避等待(Wait with exponential backoff), 计算等待时间。
+			假设 baseDelayMs = 1000：
+				第1次重试: 1000 * 2^0 = 1000ms  (1秒)
+				第2次重试: 1000 * 2^1 = 2000ms  (2秒)
+				第3次重试: 1000 * 2^2 = 4000ms  (4秒)
+			每次等待时间翻倍，避免在服务器过载时疯狂重试加重负担。
+		*/
 		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
 
 		this._emit({

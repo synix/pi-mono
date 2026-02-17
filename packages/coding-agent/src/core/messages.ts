@@ -23,6 +23,9 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
+// 用途: 用户在 TUI 里直接 !ls 执行的命令
+// 发给 LLM 时变成: → user 消息（包含 命令+ 输出），!!前缀的直接丢弃
+
 /**
  * Message type for bash executions via the ! command.
  */
@@ -32,12 +35,17 @@ export interface BashExecutionMessage {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
+	// 如果 truncated 是 true, 表示输出被截断了, 完整输出保存在 fullOutputPath 指向的文件里。
+	// 这个文件路径是绝对路径，Agent可以直接访问。
 	truncated: boolean;
 	fullOutputPath?: string;
 	timestamp: number;
 	/** If true, this message is excluded from LLM context (!! prefix) */
 	excludeFromContext?: boolean;
 }
+
+// 用途: extension 通过 sendMessage() 注入的任意消息
+// 发给 LLM 时变成: → user 消息
 
 /**
  * Message type for extension-injected messages via sendMessage().
@@ -52,6 +60,8 @@ export interface CustomMessage<T = unknown> {
 	timestamp: number;
 }
 
+// 用途: 切换分支时生成的旧分支摘要
+// 发给 LLM 时变成: → user 消息，包在 <summary> 标签里
 export interface BranchSummaryMessage {
 	role: "branchSummary";
 	summary: string;
@@ -59,12 +69,17 @@ export interface BranchSummaryMessage {
 	timestamp: number;
 }
 
+// 用途: 上下文压缩后的会话摘要
+// 发给 LLM 时变成: → user 消息，包在 <summary> 标签里
 export interface CompactionSummaryMessage {
 	role: "compactionSummary";
 	summary: string;
 	tokensBefore: number;
 	timestamp: number;
 }
+
+// 通过 TypeScript 的 declaration merging 注入了 4 种自定义消息类型:
+//  declare module "xxx" 部分叫 module augmentation，告诉编译器"我要给这个已有模块的类型补充内容"。两者组合就实现了跨包的类型扩展。
 
 // Extend CustomAgentMessages via declaration merging
 declare module "@mariozechner/pi-agent-core" {
@@ -141,7 +156,7 @@ export function createCustomMessage(
  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
  *
  * This is used by:
- * - Agent's transormToLlm option (for prompt calls and queued messages)
+ * - Agent's transformToLlm option (for prompt calls and queued messages)
  * - Compaction's generateSummary (for summarization)
  * - Custom extensions and tools
  */
@@ -151,9 +166,11 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 			switch (m.role) {
 				case "bashExecution":
 					// Skip messages excluded from context (!! prefix)
+					// 这种消息是用户自己执行的命令，想看结果但不想让 LLM 知道，所以在 convertToLlm 里直接过滤掉，不发给 LLM。
 					if (m.excludeFromContext) {
 						return undefined;
 					}
+					//
 					return {
 						role: "user",
 						content: [{ type: "text", text: bashExecutionToText(m) }],

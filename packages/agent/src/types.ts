@@ -245,6 +245,11 @@ export interface AgentContext {
 }
 
 /**
+ * AgentEvent 是 Agent运行过程中发出来的面向UI的事件
+ * 分为4大类型(agent/turn/message/tool), 10大事件
+ */
+
+/**
  * Events emitted by the Agent for UI updates.
  * These events provide fine-grained lifecycle information for messages, turns, and tool executions.
  */

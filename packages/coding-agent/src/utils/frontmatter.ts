@@ -36,4 +36,5 @@ export const parseFrontmatter = <T extends Record<string, unknown> = Record<stri
 	return { frontmatter: (parsed ?? {}) as T, body };
 };
 
+// 去掉 skill 文件开头的 YAML frontmatter 部分，只保留正文。
 export const stripFrontmatter = (content: string): string => parseFrontmatter(content).body;

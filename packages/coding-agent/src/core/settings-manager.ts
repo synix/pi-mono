@@ -149,6 +149,11 @@ export class SettingsManager {
 
 	/** Create a SettingsManager that loads from files */
 	static create(cwd: string = process.cwd(), agentDir: string = getAgentDir()): SettingsManager {
+		/*
+			这个项目有两层设置:
+				~/.pi/agent/settings.json          ← 全局设置（用户级）
+				<项目目录>/.pi/settings.json        ← 项目设置（项目级）
+		*/
 		const settingsPath = join(agentDir, "settings.json");
 		const projectSettingsPath = join(cwd, CONFIG_DIR_NAME, "settings.json");
 

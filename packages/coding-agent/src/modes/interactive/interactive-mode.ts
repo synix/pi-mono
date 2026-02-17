@@ -1959,6 +1959,10 @@ export class InteractiveMode {
 			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
 				const isExcluded = text.startsWith("!!");
+				/**
+				 * !! 前缀的 bash 命令设置 excludeFromContext: true，在 convertToLlm() 里被过滤掉，不发给 LLM。
+				 * 用途：用户想在终端里快速执行命令查看结果，但不想污染 LLM 上下文。比如 !! git log 只是自己看看，不需要 AI 知道。
+				 */
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.session.isBashRunning) {

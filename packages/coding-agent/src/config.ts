@@ -164,6 +164,16 @@ export function getChangelogPath(): string {
 
 const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8"));
 
+/**
+ * 👇 设计意图：白牌化（white-label）友好——fork 项目只需改 package.json 里的 piConfig，所有路径、环境变量名自动跟着变。
+ *
+ * 白牌化（white-label） 是指一个产品去掉原始品牌，让别人贴自己的品牌重新发布。比如：
+ *	- 某公司做了个 SaaS 产品，别的公司买过去换个 logo 和名字，当自己的产品卖给客户
+ *	- 超市里的"自有品牌"商品，实际是代工厂生产的
+ * 在软件里就是：同一套代码，改个名字、logo、配置就能变成"另一个产品"。
+ */
+
+// 从 package.json 的 piConfig 字段读取 coding-agent app 的配置, 包括 app name, 用户配置的文件夹名(比如 .pi)
 export const APP_NAME: string = pkg.piConfig?.name || "pi";
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
 export const VERSION: string = pkg.version;
@@ -188,12 +198,17 @@ export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {
 		// Expand tilde to home directory
+		// 👆 tilde 也就是 `~`
 		if (envDir === "~") return homedir();
 		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
 		return envDir;
 	}
 	return join(homedir(), CONFIG_DIR_NAME, "agent");
 }
+
+/**
+ * 下面9个getXXX()函数, 暴露了用户配置文件夹(~/.pi/agent/)里支持的9种配置项的路径。
+ */
 
 /** Get path to user's custom themes directory */
 export function getCustomThemesDir(): string {
