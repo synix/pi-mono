@@ -14,7 +14,15 @@ export {
 	type SessionStats,
 } from "./core/agent-session.js";
 // Auth and model registry
-export { type ApiKeyCredential, type AuthCredential, AuthStorage, type OAuthCredential } from "./core/auth-storage.js";
+export {
+	type ApiKeyCredential,
+	type AuthCredential,
+	AuthStorage,
+	type AuthStorageBackend,
+	FileAuthStorageBackend,
+	InMemoryAuthStorageBackend,
+	type OAuthCredential,
+} from "./core/auth-storage.js";
 // Compaction
 export {
 	type BranchPreparation,
@@ -100,6 +108,7 @@ export type {
 	SlashCommandInfo,
 	SlashCommandLocation,
 	SlashCommandSource,
+	TerminalInputHandler,
 	ToolCallEvent,
 	ToolDefinition,
 	ToolInfo,

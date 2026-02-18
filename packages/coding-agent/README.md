@@ -1,6 +1,6 @@
 # 🏖️ OSS Vacation
 
-**Issue tracker and PRs reopen February 16, 2026.**
+**Issue tracker and PRs reopen February 23, 2026.**
 
 All PRs will be auto-closed until then. Approved contributors can submit PRs after vacation without reapproval. For support, join [Discord](https://discord.com/invite/3cU7Bz4UPx).
 
@@ -150,7 +150,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/login`, `/logout` | OAuth authentication |
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
-| `/settings` | Thinking level, theme, message delivery |
+| `/settings` | Thinking level, theme, message delivery, transport |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
@@ -193,7 +193,7 @@ Submit messages while the agent is working:
 - **Escape** aborts and restores queued messages to editor
 - **Alt+Up** retrieves queued messages back to editor
 
-Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once).
+Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, or `"auto"`) for providers that support multiple transports.
 
 ---
 
@@ -341,7 +341,12 @@ pi install npm:@foo/pi-tools
 pi install npm:@foo/pi-tools@1.2.3      # pinned version
 pi install git:github.com/user/repo
 pi install git:github.com/user/repo@v1  # tag or commit
+pi install git:git@github.com:user/repo
+pi install git:git@github.com:user/repo@v1  # tag or commit
 pi install https://github.com/user/repo
+pi install https://github.com/user/repo@v1      # tag or commit
+pi install ssh://git@github.com/user/repo
+pi install ssh://git@github.com/user/repo@v1    # tag or commit
 pi remove npm:@foo/pi-tools
 pi list
 pi update                               # skips pinned packages
@@ -452,7 +457,7 @@ pi config                   # Enable/disable package resources
 | Option | Description |
 |--------|-------------|
 | `--provider <name>` | Provider (anthropic, openai, google, etc.) |
-| `--model <id>` | Model ID |
+| `--model <pattern>` | Model pattern or ID (supports `provider/id` and optional `:<thinking>`) |
 | `--api-key <key>` | API key (overrides env vars) |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
@@ -523,6 +528,12 @@ pi -p "Summarize this codebase"
 
 # Different model
 pi --provider openai --model gpt-4o "Help me refactor"
+
+# Model with provider prefix (no --provider needed)
+pi --model openai/gpt-4o "Help me refactor"
+
+# Model with thinking level shorthand
+pi --model sonnet:high "Solve this complex problem"
 
 # Limit model cycling
 pi --models "claude-*,gpt-4o"
