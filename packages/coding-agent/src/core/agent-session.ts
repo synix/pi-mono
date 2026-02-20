@@ -1452,7 +1452,11 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		// 在执行 compaction 之前，先断开 agent 事件监听并中止当前正在进行的 LLM 请求
+
+		// 取消对 agent 事件的订阅，防止 compaction 期间 agent 的状态变化触发不必要的事件处理
 		this._disconnectFromAgent();
+		// 中止当前可能正在进行的 LLM streaming 请求，因为 compaction 会替换消息列表，继续接收旧请求的响应没有意义
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 
@@ -1557,6 +1561,7 @@ export class AgentSession {
 			};
 		} finally {
 			this._compactionAbortController = undefined;
+			// compaction 完成后会重新连接 agent 并恢复执行
 			this._reconnectToAgent();
 		}
 	}
@@ -1693,6 +1698,8 @@ export class AgentSession {
 				return;
 			}
 
+			// 之所以把compact机制拆分为 prepareCompaction + compact，是为了给 extension 提供一个机会，在真正调用 LLM 生成压缩摘要之前先看看 extension 自己能不能提供压缩结果（extensionCompaction）。
+			// 如果 extension 没有提供（extensionCompaction 为空），才调用默认的 compact 逻辑生成压缩摘要。
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
 
@@ -1747,10 +1754,15 @@ export class AgentSession {
 				return;
 			}
 
+			// 把摘要写入 session 持久化存储，作为一条新的 compaction entry。firstKeptEntryId 告诉 session manager 从哪条 entry 开始保留原始消息，之前的旧消息可以被摘要替代。
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
+			// 重新构建 session 上下文。此时 session manager 会用 compaction 摘要 + 保留的近期消息重新组装消息列表，而不是用全部原始消息。
 			const sessionContext = this.sessionManager.buildSessionContext();
+			// 把压缩后的新消息列表热替换到正在运行的 agent loop 中。这样下一次 LLM 调用就会用压缩后的上下文，而不需要重启 session。
 			this.agent.replaceMessages(sessionContext.messages);
+
+			// 👆 简单说：写摘要 → 重建上下文 → 热替换到 agent，让 compaction 在不中断对话的情况下立即生效。
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -1773,6 +1785,11 @@ export class AgentSession {
 			};
 			this._emit({ type: "auto_compaction_end", result, aborted: false, willRetry });
 
+			/*
+				compaction 是因为 LLM 返回了 context window 超限错误而触发的。
+				压缩完成后需要重试那次失败的请求。但先把最后一条 stopReason === "error" 的 assistant 消息删掉（那是错误响应，没用），然后 setTimeout 异步重新调用 agent.continue() 让 agent loop 继续。
+			*/
+
 			if (willRetry) {
 				const messages = this.agent.state.messages;
 				const lastMsg = messages[messages.length - 1];
@@ -1784,12 +1801,18 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			} else if (this.agent.hasQueuedMessages()) {
+				/*
+					compaction是常规触发的（非错误），但压缩期间用户可能又发了新消息（排队中）。压缩完后需要踢一下 agent loop，让排队的消息被处理。
+				*/
+
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			}
+
+			// 👆 两者都用 setTimeout(..., 100) 是为了避免在当前事件处理回调中同步重入 agent loop，把继续执行推到下一个事件循环。
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({

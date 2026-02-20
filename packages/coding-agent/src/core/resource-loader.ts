@@ -54,6 +54,10 @@ function resolvePromptInput(input: string | undefined, description: string): str
 	return input;
 }
 
+/*
+  从指定目录加载上下文文件，AGENTS.md 优先于 CLAUDE.md，找到第一个就返回，两个都没有返回 null。
+  这说明 AGENTS.md 是这个项目自己的命名（pi-mono），CLAUDE.md 是兼容 Claude Code 的写法。两者功能相同，只是名字不同，同目录下只会用一个。
+*/
 function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
 	const candidates = ["AGENTS.md", "CLAUDE.md"];
 	for (const filename of candidates) {
@@ -86,6 +90,17 @@ function loadProjectContextFiles(
 		contextFiles.push(globalContext);
 		seenPaths.add(globalContext.path);
 	}
+
+	/*
+		从当前目录逐级向上遍历到根目录 /，收集沿途每个目录中的 AGENTS.md / CLAUDE.md。
+
+		关键细节：
+		- unshift — 插入到数组头部，所以最终顺序是从根到叶(越上层的排越前)
+		- seenPaths — 去重，避免同一个文件被加载两次
+
+		效果：如果你的项目在 /home/user/projects/my-app，它会依次检查/、/home、/home/user、/home/user/projects、/home/user/projects/my-app 下有没有上下文文件，全部收集起来按层级顺序拼接。
+		这就是为什么你可以在 ~ 放一个全局 CLAUDE.md，在项目根目录再放一个项目级的 — 两个都会被加载，全局的排前面。
+	*/
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
 
@@ -420,16 +435,40 @@ export class DefaultResourceLoader implements ResourceLoader {
 			this.addDefaultMetadataForPath(extension.path);
 		}
 
+		/*
+			和 system prompt 一样的三级优先链模式：
+
+			1. loadProjectContextFiles() — 从文件系统加载项目上下文文件 (CLAUDE.md / AGENTS.md 之类)
+			2. 包一层 { agentsFiles: ... } — 包成对象传给 override
+			3. agentsFilesOverride — 可选的变换函数，可以修改、过滤或替换加载结果
+
+			设计意图：SDK 用户可以通过 agentsFilesOverride 回调拦截从磁盘加载的上下文文件，做增删改后再交给 agent 使用。
+			比如在 web 场景下，你可能不想从文件系统读，而是从数据库注入上下文 — 这个 override 就是那个注入点。
+		*/
 		const agentsFiles = { agentsFiles: loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }) };
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
+		/*
+			这是 system prompt 的3级优先链:
+			1. this.systemPromptSource — 代码中直接传入的 prompt (SDK 用法，最高优先)
+			2. discoverSystemPromptFile() — 从文件系统发现 SYSTEM.md
+			3. this.systemPromptOverride — 一个变换函数，拿到上面的结果后可以再加工修改
+
+			也就是说: 先确定基础 prompt 来源 (代码传入 > SYSTEM.md发现), 然后如果注册了 systemPromptOverride 回调，再对结果做一次变换。这让调用方既能完全替换 prompt，也能在默认 prompt 基础上做微调。
+
+			resolvePromptInput() 的逻辑是:
+  			1. 如果传入的字符串是一个存在的文件路径 → 读取文件内容返回
+  			2. 如果不是文件路径 → 直接当作 prompt 文本返回
+  			所以 systemPromptSource 既可以传文件路径 (如 /path/to/SYSTEM.md), 也可以直接传 prompt 文本字符串。它会自动判断。
+		*/
 		const baseSystemPrompt = resolvePromptInput(
 			this.systemPromptSource ?? this.discoverSystemPromptFile(),
 			"system prompt",
 		);
 		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
 
+		// append system prompt 和 system prompt 一样的3级优先链:
 		const appendSource = this.appendSystemPromptSource ?? this.discoverAppendSystemPromptFile();
 		const resolvedAppend = resolvePromptInput(appendSource, "append system prompt");
 		const baseAppend = resolvedAppend ? [resolvedAppend] : [];
@@ -742,7 +781,19 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { themes: Array.from(seen.values()), diagnostics };
 	}
 
+	/*
+		两个文件的作用：
+		- SYSTEM.md — 替换整个主 system prompt(对应 ResourceLoader.getSystemPrompt())
+		- APPEND_SYSTEM.md — 追加内容到 system prompt 末尾(对应 ResourceLoader.getAppendSystemPrompt())
+	*/
 	private discoverSystemPromptFile(): string | undefined {
+		/*
+			这是 system prompt 的文件级自定义机制, 支持两层覆盖:
+  			1. 项目级优先: 先找 <项目>/.pi/SYSTEM.md (或对应 CONFIG_DIR_NAME)s
+  			2. 用户级兜底: 找不到就用 ~/.pi/agent/SYSTEM.md (用户级配置目录)
+			
+  			这就是白牌化(white-label)机制的体现 — 如果你 fork 这个项目做自己的 coding agent，放一个 SYSTEM.md 就能完全替换默认人设，而 APPEND_SYSTEM.md 则用于在保留默认人设的基础上追加额外指令。
+		 */
 		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
 		if (existsSync(projectPath)) {
 			return projectPath;

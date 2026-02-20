@@ -41,8 +41,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 	} = options;
+	// 解析出current working directory，默认为process.cwd()，也可以通过options传入覆盖
 	const resolvedCwd = cwd ?? process.cwd();
 
+	// 获取当前日期时间，格式化为可读字符串
 	const now = new Date();
 	const dateTime = now.toLocaleString("en-US", {
 		weekday: "long",
@@ -76,6 +78,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			}
 		}
 
+		/*
+			只有当 agent 拥有 read 工具时，才把 skill 列表追加到 system prompt。
+
+  			原因：skill 的渐进式披露机制依赖 read 工具 — 初始只展示 skill 的名称和简短描述，agent 需要用 read 去读取 SKILL.md 文件获取完整指令。
+			如果 agent 没有 read 工具，给它看 skill 列表也没用，它没法读取详情。
+		*/
+
 		// Append skills section (only if read tool is available)
 		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
 		if (customPromptHasRead && skills.length > 0) {
@@ -97,6 +106,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	// Build tools list based on selected tools (only built-in tools with known descriptions)
 	const tools = (selectedTools || ["read", "bash", "edit", "write"]).filter((t) => t in toolDescriptions);
 	const toolsList = tools.length > 0 ? tools.map((t) => `- ${t}: ${toolDescriptions[t]}`).join("\n") : "(none)";
+
+	// 👇 根据内置的7个tool拼接出guidelines的文本
 
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];

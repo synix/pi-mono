@@ -34,6 +34,7 @@ function loadLargeSessionEntries(): SessionEntry[] {
 	const content = readFileSync(sessionPath, "utf-8");
 	const entries = parseSessionEntries(content);
 	migrateSessionEntries(entries); // Add id/parentId for v1 fixtures
+	// 去掉 session header
 	return entries.filter((e): e is SessionEntry => e.type !== "session");
 }
 
@@ -78,6 +79,10 @@ beforeEach(() => {
 	resetEntryCounter();
 });
 
+/*
+	lastId 用于构建 session entries 的 parent-child 关系
+	createMessageEntry、createCompactionEntry、createModelChangeEntry、createThinkingLevelEntry 每次创建新 entry 时都会更新 lastId, 这样生成的 entries 就有正确的 parentId 链
+*/
 function createMessageEntry(message: AgentMessage): SessionMessageEntry {
 	const id = `test-id-${entryCounter++}`;
 	const entry: SessionMessageEntry = {

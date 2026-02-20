@@ -35,6 +35,8 @@ export interface CompactionDetails {
 	modifiedFiles: string[];
 }
 
+// 收集整个会话中所有的文件操作记录（哪些文件被读了、哪些被修改了），供 compaction 摘要末尾附加文件列表。
+
 /**
  * Extract file operations from messages and previous compaction entries.
  */
@@ -44,6 +46,12 @@ function extractFileOperations(
 	prevCompactionIndex: number,
 ): FileOperations {
 	const fileOps = createFileOps();
+
+	/*
+		从上次 compaction 的 details 中继承：
+		如果之前已经做过 compaction，那次压缩时记录的 readFiles 和 modifiedFiles 会被取出来作为基础。
+		这样文件操作记录是跨多次 compaction 累积的，不会因为压缩而丢失。(fromHook的检查是跳过外部 hook 生成的 compaction，只信任自己生成的。)
+	*/
 
 	// Collect from previous compaction's details (if pi-generated)
 	if (prevCompactionIndex >= 0) {
@@ -59,6 +67,11 @@ function extractFileOperations(
 			}
 		}
 	}
+
+	/*
+		从当前待压缩的消息中提取：遍历所有消息，调用 extractFileOpsFromMessage 解析 tool call 中的文件操作
+		(比如 Read、Edit、Write等工具调用的参数里会包含文件路径）。
+	*/
 
 	// Extract from tool calls in messages
 	for (const msg of messages) {
@@ -104,6 +117,27 @@ export interface CompactionResult<T = unknown> {
 // ============================================================================
 // Types
 // ============================================================================
+
+/*
+  3个字段的含义:
+
+  1. enabled — 是否开启 compaction（上下文压缩）。关闭后对话不会被自动摘要压缩。
+  2. reserveTokens（默认 16384）— 为输出/摘要生成预留的 token 数。具体作用有两处：
+    - 触发判断：当 contextTokens > contextWindow - reserveTokens 时触发 compaction
+	  (也就是说，当上下文快要把窗口占满、只剩下 reserveTokens的空间时，就该压缩了。
+
+    - 摘要生成预算：生成摘要时，maxTokens = 0.8 * reserveTokens（主摘要）或 0.5 * reserveTokens（turn prefix 摘要），用作 LLM 输出的 token 上限。
+	  主摘要压缩的内容多、信息密度高（可能跨越多轮完整对话），需要更大的预算才能保留关键信息，所以给 0.8 * reserveTokens。
+	  Turn prefix 摘要只覆盖一个 turn 的前半段，范围小得多，只需要提供"前情提要"让后面保留的 suffix 能被理解，所以 0.5 * reserveTokens 就够了。
+
+  	  另外两者的预算加起来是 1.3 * reserveTokens，超过了 reserveTokens本身。
+	  这没问题，因为它们是分别独立调用 LLM 生成的（各自作为 maxTokens 上限），实际输出通常远小于上限，而且生成完的摘要会替代被丢弃的大量原始消息，最终上下文会缩小很多。
+
+  3. keepRecentTokens（默认 20000）— compaction 时保留最近多少 token 的原始对话不压缩。
+  	从对话末尾往前累加 token，累积到 >= keepRecentTokens 时切一刀，切点之前的旧消息被压缩成摘要，切点之后的近期消息原样保留。
+
+  简单来说：reserveTokens 控制"什么时候压缩"和"摘要多长"，keepRecentTokens控制"压缩时保留多少最近的原始对话"。
+*/
 
 export interface CompactionSettings {
 	enabled: boolean;
@@ -160,6 +194,8 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 export interface ContextUsageEstimate {
 	tokens: number;
 	usageTokens: number;
+	// 为什么叫  trailing?
+	// 因为这些消息在最后一次 usage 记录之后"拖尾"——就像 trailing whitespace（尾部空白）一样，是尾巴上还没被精确计量的那部分。
 	trailingTokens: number;
 	lastUsageIndex: number | null;
 }
@@ -223,6 +259,15 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
  * This is conservative (overestimates tokens).
  */
 export function estimateTokens(message: AgentMessage): number {
+	/*
+		估算确实是一个粗糙的启发式方法，注释也承认了这一点（"conservative, overestimates tokens"）。
+
+		不过它在这个场景下是够用的：
+		- compaction 的触发和切点只需要大致准确，不需要精确 token 计数
+		- 偏高估算（overestimate）意味着会提前触发压缩、多保留一些近期消息，是一个安全方向的偏差
+		- 用真正的 tokenizer（如 tiktoken）会引入额外依赖和计算开销，对于这个用途来说性价比不高
+	*/
+
 	let chars = 0;
 
 	switch (message.role) {
@@ -290,6 +335,18 @@ export function estimateTokens(message: AgentMessage): number {
  * BashExecutionMessage is treated like a user message (user-initiated context).
  */
 function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
+	/*
+		在给定范围内找出所有可以作为切点的 entry 索引。
+
+		核心规则：永远不在 toolResult 处切。
+		因为 toolResult 必须紧跟在它对应的 tool call (assistant 消息) 之后，如果在 toolResult 处切断，就会把工具调用和工具结果拆散，破坏对话结构。
+		合法切点包括：
+		- message 类型中的 user、assistant、bashExecution、custom、branchSummary、compactionSummary
+		- entry 类型为 branch_summary 或 custom_message
+
+		其余 entry 类型（thinking_level_change、model_change、compaction、label等）是元数据，不算合法切点，直接跳过（switch 里 fall through 到空处理）。
+		返回的索引数组供 findCutPoint 使用，在这些合法位置中按 keepRecentTokens 选择最终切点。
+	*/
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
@@ -350,10 +407,14 @@ export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, 
 
 export interface CutPointResult {
 	/** Index of first entry to keep */
+	// 切点位置，从这个索引开始的 entry 会被原样保留，之前的被压缩
 	firstKeptEntryIndex: number;
 	/** Index of user message that starts the turn being split, or -1 if not splitting */
+	// 如果切点落在一个 turn 中间，这是该 turn 起始 user 消息的索引；没有切分 turn 时为 -1
 	turnStartIndex: number;
 	/** Whether this cut splits a turn (cut point is not a user message) */
+	// 切点是否把一个 turn 劈成了两半（即 firstKeptEntryIndex 不是一个 user 消息，而是 turn 中间的某条 assistant/tool 消息）
+	// 当 isSplitTurn === true 时，[turnStartIndex, firstKeptEntryIndex) 这段就是需要单独生成 turn prefix 摘要的部分。
 	isSplitTurn: boolean;
 }
 
@@ -391,6 +452,8 @@ export function findCutPoint(
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
 		const entry = entries[i];
+		// 在从后往前累加 token 时，只统计 message 类型的 entry。
+		// 其他类型（thinking_level_change、model_change、label 等）是元数据，不占 LLM 上下文 token，所以跳过不计。
 		if (entry.type !== "message") continue;
 
 		// Estimate this message's size
@@ -410,6 +473,14 @@ export function findCutPoint(
 		}
 	}
 
+	/*
+		确定切点后，往前多捞一些紧挨着切点的非消息 entry。
+		比如切点前面可能有 thinking_level_change、model_change、label 这类元数据 entry。它们不占 token 但可能是紧随其后消息的配置上下文（比如在某条消息前切换了模型）。
+		如果不把它们一起保留，保留的消息可能会缺少正确的配置状态。
+		往前扫描的停止条件：碰到 compaction（上次压缩边界）或 message（属于更早的对话内容）就停。
+		效果：切点从"第一条保留的 message"前移到"第一条保留的 message 及其前面紧邻的元数据 entry"。
+	*/
+
 	// Scan backwards from cutIndex to include any non-message entries (bash, settings, etc.)
 	while (cutIndex > startIndex) {
 		const prevEntry = entries[cutIndex - 1];
@@ -424,6 +495,11 @@ export function findCutPoint(
 		// Include this non-message entry (bash, settings change, etc.)
 		cutIndex--;
 	}
+
+	/*
+		在 findCutPoint 中，当切点落在 assistant 消息上时，用这个函数找到该 turn 的 user 消息位置，
+		从而确定 turnStartIndex，知道 turn prefix 的范围是 [turnStartIndex, firstKeptEntryIndex)。
+	*/
 
 	// Determine if this is a split turn
 	const cutEntry = entries[cutIndex];
@@ -440,6 +516,15 @@ export function findCutPoint(
 // ============================================================================
 // Summarization
 // ============================================================================
+
+/*
+主摘要 (SUMMARIZATION_PROMPT / UPDATE_SUMMARIZATION_PROMPT)
+  - 压缩对象：切点之前的完整历史 turn（可能跨越多轮对话）
+  - token 预算：0.8 * reserveTokens（较大）
+  - 格式：结构化的"项目检查点"，包含 6 个固定 section：
+    - Goal / Constraints & Preferences / Progress (Done/In Progress/Blocked) / Key Decisions / Next Steps / Critical Context
+  - 增量模式：如果已有上一次 compaction 的摘要(previousSummary)，会用 UPDATE_SUMMARIZATION_PROMPT 做增量更新而非重写，保留已有信息并合入新内容
+*/
 
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
@@ -598,10 +683,13 @@ export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 ): CompactionPreparation | undefined {
+	// 如果对话的最后一条 entry 就是 compaction 类型（即上次 compaction之后没有任何新消息），就直接返回 undefined 表示不需要再压缩。
+	// 防止对一个刚压缩完、还没有新对话内容的 session 重复压缩。
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
 	}
 
+	// 从后往前找到最近一次 compaction entry 的位置
 	let prevCompactionIndex = -1;
 	for (let i = pathEntries.length - 1; i >= 0; i--) {
 		if (pathEntries[i].type === "compaction") {
@@ -609,6 +697,7 @@ export function prepareCompaction(
 			break;
 		}
 	}
+
 	const boundaryStart = prevCompactionIndex + 1;
 	const boundaryEnd = pathEntries.length;
 
@@ -664,14 +753,23 @@ export function prepareCompaction(
 		}
 	}
 
+	// 👇 这个结构本质上是把 compaction 拆成了准备阶段（纯计算，确定切点和分组消息）和执行阶段（调 LLM生成摘要），中间暴露给 extension 一个介入机会。
 	return {
+		// 切点处第一条保留 entry 的 UUID
 		firstKeptEntryId,
+		// 切点之前的完整 turn 消息，会被压缩成主摘要然后丢弃
 		messagesToSummarize,
+		// 如果切分了一个 turn，这是被切掉的前半段消息，用于生成 turn prefix 摘要；没有切分时为空数组
 		turnPrefixMessages,
+		// 切点是否把某个 turn 劈成了两半
 		isSplitTurn: cutPoint.isSplitTurn,
+		//  compaction 前的上下文 token 估算值，会记录到 CompactionEntry 中，用于对比压缩效果
 		tokensBefore,
+		// 上次 compaction 的摘要文本（如果有的话），传给 generateSummary 做增量更新而非重写
 		previousSummary,
+		// 从待压缩消息和上次 compaction details 中提取的文件操作记录（read/edited），追加到摘要末尾
 		fileOps,
+		// 当前的 compaction 配置，传递给后续的 compact() 使用
 		settings,
 	};
 }

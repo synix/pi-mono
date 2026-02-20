@@ -345,6 +345,29 @@ function loadSkillFromFile(
 	}
 }
 
+/*
+ 
+  这是一种"渐进式披露"设计 —— 系统提示词中只放名称和描述，agent 需要时再用 read tool 读取完整的 SKILL.md 内容。
+ 
+  "渐进式披露"的实现分为两条路径：
+ 
+  路径一: Agent 自主读取 (read tool)
+	这条路径没有专门的代码来处理skill读取 —— 它就是普通的文件读取。关键在于 system prompt 中的指令引导 agent 自己决定去读。
+
+	1. 系统提示词注入指令:
+		只有当 agent 拥有 read tool时，才把skills列表放进系统提示词
+		- "Use the read tool to load a skill's file when the task matches its description."
+		- 每个skill的 <location> 标签 (即 SKILL.md 的绝对路径)
+
+	2. Agent 调用 read tool 读取文件:
+		这就是一个通用的文件读取工具，agent 看到系统提示词里的 <location>/path/to/SKILL.md</location> 后，自己决定调用 read(path: "/path/to/SKILL.md") 来获取完整内容。没有任何skill专属逻辑。
+		所以这条路径本质上是 prompt engineering：通过系统提示词中的指令 + location 路径，让 agent 自主决定何时用通用 read tool 去加载SKILL.md。
+
+  路径二：用户手动触发（/skill:name 命令）
+	这条路径有专门的代码，直接读文件并注入到对话中。
+	packages/coding-agent/src/core/agent-session.ts:_expandSkillCommand
+ * /
+
 /**
  * Format skills for inclusion in a system prompt.
  * Uses XML format per Agent Skills standard.
@@ -352,25 +375,6 @@ function loadSkillFromFile(
  *
  * Skills with disableModelInvocation=true are excluded from the prompt
  * (they can only be invoked explicitly via /skill:name commands).
- *
- * 这是一种"渐进式披露"设计 —— 提示词中只放名称和描述，
- * agent 需要时再用 read tool 读取完整的 SKILL.md 内容。
- *
- * "渐进式披露"的实现分为两条路径：
- *
- * 路径一: Agent 自主读取 (read tool)
- * 这条路径没有专门的代码来处理技能读取 —— 它就是普通的文件读取。关键在于 system prompt 中的指令引导 agent 自己决定去读。
- * 1. 系统提示词注入指令 — packages/coding-agent/src/core/system-prompt.ts:178-181
- * 	只有当 agent 拥有 read 工具时，才把技能列表放进系统提示词
- * 	- "Use the read tool to load a skill's file when the task matches its description."
- * 	- 每个技能的 <location> 标签（即 SKILL.md 的绝对路径）
- * 2. Agent 调用 read tool 读取文件 — packages/coding-agent/src/core/tools/read.ts
- *  这就是一个通用的文件读取工具，agent 看到系统提示里的 <location>/path/to/SKILL.md</location> 后，自己决定调用 read(path: "/path/to/SKILL.md") 来获取完整内容。没有任何技能专属逻辑。
- *  所以这条路径本质上是 prompt engineering：通过系统提示的指令 + location 路径，让 agent 自主决定何时用通用 read tool 去加载技能文件。
- *
- * 路径二：用户手动触发（/skill:name 命令）
- * 这条路径有专门的代码，直接读文件并注入到对话中。
- * packages/coding-agent/src/core/agent-session.ts:_expandSkillCommand
  */
 export function formatSkillsForPrompt(skills: Skill[]): string {
 	// 过滤掉禁止模型自动调用的技能

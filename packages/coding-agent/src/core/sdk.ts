@@ -293,7 +293,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extension注入图片 ──┘                        ↑ 这里统一拦截，不会遗漏
 
 		图片被替换成文字 "Image reading is disabled."，而不是静默丢弃——让 LLM知道"有图片但我看不到"，避免它困惑为什么缺少上下文。
-	 */
+	*/
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
