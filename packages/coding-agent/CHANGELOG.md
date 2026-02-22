@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.54.1] - 2026-02-22
+
+### Fixed
+
+- Externalized koffi from bun binary builds, reducing archive sizes by ~15MB per platform (e.g. darwin-arm64: 43MB -> 28MB). Koffi's Windows-only `.node` file is now shipped alongside the Windows binary only.
+
+## [0.54.0] - 2026-02-19
+
+### Added
+
+- Added default skill auto-discovery for `.agents/skills` locations. Pi now discovers project skills from `.agents/skills` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo), and global skills from `~/.agents/skills`, in addition to existing `.pi` skill paths.
+
+## [0.53.1] - 2026-02-19
+
+### Changed
+
+- Added Gemini 3.1 model catalog entries for all built-in providers that currently expose it: `google`, `google-vertex`, `opencode`, `openrouter`, and `vercel-ai-gateway`.
+- Added Claude Opus 4.6 Thinking to the `google-antigravity` model catalog.
+
 ## [0.53.0] - 2026-02-17
 
 ### Breaking Changes
