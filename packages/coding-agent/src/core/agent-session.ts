@@ -294,6 +294,9 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
 
+		// 🐂 这里是本仓库以及AgentSession唯一订阅 agent 事件的地方
+		// 订阅后所有事件都会经过 _handleAgentEvent()
+
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
@@ -325,11 +328,29 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// steering 和 follow-up 队列里的消息是"待发送"的, 一旦确认已经作为用户消息发出去了，就从队列里消费掉，防止重复发送
+		// steering 优先级高于follow-up，所以先检查 steering
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			const messageText = this._getUserMessageText(event.message);
 			if (messageText) {
+				/*
+					这里进行文本内容匹配，逻辑上有潜在问题:
+
+					如果两条不同来源的消息恰好文本相同，比如 steering 队列和 follow-up 队列各有一条内容一样的消息，这段代码只会消费 steering 那条（因为先查steering），follow-up 那条就永远留在队列里不会被清除。
+
+					更明显的问题是同一队列内的重复：如果 steering 队列里有两条相同文本的消息，indexOf 只找到第一条并移除，第二条还在。
+					但实际发出去的可能是第二条，第一条反而被错误消费了——不过由于文本相同，实际效果可能没区别。
+
+					不过实践中这大概率不是真正的 bug：
+					- steering 和 follow-up 的消息通常由不同逻辑路径生成，内容重复的概率很低
+					- 即使偶尔有残留消息，队列在下一轮循环中会被重新检查或清空
+
+					用 ID 匹配而非文本匹配会更健壮，但对于当前场景，这种简单实现够用了。
+				*/
+
 				// Check steering queue first
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
 				if (steeringIndex !== -1) {
@@ -369,11 +390,30 @@ export class AgentSession {
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}
+
+			/*
+				除了常规的 user/assistant/toolResult 消息会被持久化到 session 之外，还有 
+				bashExecution、compactionSummary、branchSummary 这几种消息类型也会被持久化，但不是在当前这个代码路径写入的，而是在其他地方单独处理。
+
+  				比如 compaction 摘要由 compaction 流程自己写入 session，
+				branch summary 由分支切换逻辑写入 —— 它们各自有专门的持久化入口，不走这里统一的消息写入逻辑。
+			*/
+
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
 				this._lastAssistantMessage = event.message;
+
+				/*
+					当 assistant 成功响应（stopReason 不是 error）且之前有过重试（_retryAttempt > 0）时:
+						1. 发出 auto_retry_end 事件，标记重试成功
+						2. 重置重试计数器归零
+						3. 调用 _resolveRetry() 解除重试等待的 Promise
+					关键是注释说的：在收到成功响应时立即重置，而不是等到 turn 结束。
+					因为一个 turn 内可能有多次 LLM 调用（比如工具调用后继续对话），如果不及时重置，重试计数会跨 LLM 调用累积，导致后面
+					某次调用失败时以为已经重试了很多次而提前放弃。
+				*/
 
 				// Reset retry counter immediately on successful assistant response
 				// This prevents accumulation across multiple LLM calls within a turn
@@ -389,6 +429,11 @@ export class AgentSession {
 				}
 			}
 		}
+
+		/*
+			当 agent loop 结束时，把缓存的最后一条 assistant 消息取出来并清空引用。
+  			这是为了在 agent_end 之后对这条消息做后续的 auto-retry 和 auto-compaction 处理 —— 先取出再清空，确保只处理一次。
+		*/
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
@@ -2691,8 +2736,19 @@ export class AgentSession {
 		let newLeafId: string | null;
 		let editorText: string | undefined;
 
+		/* 
+			👇 这是用户在 TUI 中导航到某条历史消息时， 决定 leafId 怎么移动的逻辑:
+			如果导航到 user 消息或 custom_message:
+				leafId 设为它的父节点(而不是它本身), 同时提取文本放到编辑器里
+				这意味着用户想重新编辑并发送这条消息 —— leaf 回退到上一条，编辑器预填内容，用户修改后发送就自然形成新分支
+			如果导航到非 user 消息(比如 assistant 回复): 
+				leafId设为它本身。这意味着用户想从这个点继续对话，下次发送的消息会以它为 parent。
+
+			 本质区别：user 消息是"我要重新说这句话"（回退+编辑），非 user 消息是"我要从这里接着聊"（定位+继续）	
+		*/
 		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
 			// User message: leaf = parent (null if root), text goes to editor
+			// 当用户导航到第一条 user 消息(树的根节点) 并想重新编辑它时, targetEntry.parentId 就是 null(根节点没有 parent), 所以 newLeafId === null
 			newLeafId = targetEntry.parentId;
 			editorText = this._extractUserMessageText(targetEntry.message.content);
 		} else if (targetEntry.type === "custom_message") {
@@ -2714,6 +2770,11 @@ export class AgentSession {
 		// Summary is attached at the navigation target position (newLeafId), not the old branch
 		let summaryEntry: BranchSummaryEntry | undefined;
 		if (summaryText) {
+			// 1. 有摘要(summaryText 存在):
+			// 调用 branchWithSummary，在目标位置newLeafId创建新分支并注入旧分支的摘要，这样新分支不会丢失旧分支的上下文。
+			// 即摘要不是存在旧分支上，而是通过 branchWithSummary(newLeafId, ...) 存在新分支的起点
+			// 如果有 label 还会给摘要 entry 打个书签。
+
 			// Create summary at target position (can be null for root)
 			const summaryId = this.sessionManager.branchWithSummary(newLeafId, summaryText, summaryDetails, fromExtension);
 			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
@@ -2723,9 +2784,15 @@ export class AgentSession {
 				this.sessionManager.appendLabelChange(summaryId, label);
 			}
 		} else if (newLeafId === null) {
+			// 2. 无摘要 + 导航到根 (newLeafId === null):
+			// 用户要重新编辑第一条消息, 调用 resetLeaf() 把 leafId 置空, 下次 append 会创建新的根 entry
+
 			// No summary, navigating to root - reset leaf
 			this.sessionManager.resetLeaf();
 		} else {
+			// 3. 无摘要 + 导航到非根节点:
+			// 普通的分支操作, branch(newLeafId) 移动指针即可
+
 			// No summary, navigating to non-root
 			this.sessionManager.branch(newLeafId);
 		}

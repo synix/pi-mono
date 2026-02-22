@@ -639,6 +639,8 @@ export async function generateSummary(
 		},
 	];
 
+	// 主摘要调 LLM 时传了 reasoning: "high", 让模型深度思考; 而 turn prefix 摘要 没传 reasoning.
+	// 这意味着主摘要的质量会更高(消耗更多 token), turn prefix 摘要 (generateTurnPrefixSummary) 用的是默认thinking level
 	const response = await completeSimple(
 		model,
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
@@ -698,6 +700,15 @@ export function prepareCompaction(
 		}
 	}
 
+	/*
+		prevCompactionIndex 是上次 compaction 摘要在 pathEntries 中的位置：
+		- boundaryStart = prevCompactionIndex + 1 <— 本次可被压缩的消息范围的起点（上次摘要之后的第一条消息）
+		- boundaryEnd = pathEntries.length <— 范围的终点（所有条目的末尾）
+		- usageStart = prevCompactionIndex >= 0 ? prevCompactionIndex : 0 — 用于估算 token 消耗的起点，比 boundaryStart 早一位，因为要把上次的摘要条目本身也算进去来统计压缩前的总 token 数
+
+  		简单说：boundaryStart ~ boundaryEnd 是"哪些消息可以被压缩"，usageStart ~ boundaryEnd 是"当前上下文总共有多少token"（多包含了上次摘要本身）。
+	*/
+
 	const boundaryStart = prevCompactionIndex + 1;
 	const boundaryEnd = pathEntries.length;
 
@@ -718,6 +729,7 @@ export function prepareCompaction(
 	}
 	const firstKeptEntryId = firstKeptEntry.id;
 
+	// 当 turn 被切分时，主摘要只压缩到 turnStartIndex(被切 turn 的用户消息之前), turn prefix 覆盖 [turnStartIndex, firstKeptEntryIndex)。两者不重叠。
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
 
 	// Messages to summarize (will be discarded after summary)

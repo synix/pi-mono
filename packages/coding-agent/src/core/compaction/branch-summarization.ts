@@ -184,6 +184,11 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 	const fileOps = createFileOps();
 	let totalTokens = 0;
 
+	/*
+		遍历全部 entries，从所有 branch_summary 的 details 中提取文件操作。
+		注意是全部——即使某些 entry 因为 token 预算放不进摘要内容，文件操作记录也要保留。因为"操作过哪些文件"这个信息不应该因为 token 限制而丢失。
+	*/
+
 	// First pass: collect file ops from ALL entries (even if they don't fit in token budget)
 	// This ensures we capture cumulative file tracking from nested branch summaries
 	// Only extract from pi-generated summaries (fromHook !== true), not extension-generated ones
@@ -202,6 +207,10 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 		}
 	}
 
+	/*
+		从最新到最旧走，在 token 预算内尽量多塞消息内容，同时从 assistant 的 tool call 中继续提取文件操作。
+	*/
+
 	// Second pass: walk from newest to oldest, adding messages until token budget
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
@@ -212,6 +221,15 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 		extractFileOpsFromMessage(message, fileOps);
 
 		const tokens = estimateTokens(message);
+
+		/*
+			在 token 预算即将超限时的特殊处理：
+
+			正常情况下，超预算就停。但如果当前 entry 是 compaction 或 branch_summary（历史摘要），且已用预算还没超过 90%，就破例塞进去再停。
+			原因：摘要 entry 是高密度的上下文浓缩，丢掉它会损失大量历史信息。多花 10% 的预算保留一条摘要，比严格卡预算但丢失整段历史要划算。
+			90% 的阈值是为了避免已经快满了还硬塞，导致超出太多。
+
+		*/
 
 		// Check budget before adding
 		if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
@@ -237,6 +255,7 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 // Summary Generation
 // ============================================================================
 
+// Preamble 是"前言/序言"的意思
 const BRANCH_SUMMARY_PREAMBLE = `The user explored a different conversation branch before returning here.
 Summary of that exploration:
 

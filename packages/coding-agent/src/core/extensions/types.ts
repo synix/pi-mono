@@ -358,36 +358,6 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	renderResult?: (result: AgentToolResult<TDetails>, options: ToolRenderResultOptions, theme: Theme) => Component;
 }
 
-/*
-  💥 Extension 的 event handlers 支持的22种事件:
-  + 资源发现: resources_discover
-  + session生命周期事件(10种): 
-  	 session_start
-	 session_before_switch
-	 session_switch
-	 session_before_fork
-	 session_fork
-	 session_before_compact
-	 session_compact
-	 session_before_tree
-	 session_tree
-	 session_shutdown
-  + agent事件(6种):
-     context
-	 before_agent_start
-	 agent_start
-	 agent_end
-	 turn_start
-	 turn_end
-  + tool事件(2种):
-	 tool_call
-	 tool_result
-  + 用户输入事件(3种):
-     input
-	 user_bash
-	 model_select
- */
-
 // ============================================================================
 // Resource Events
 // ============================================================================
@@ -823,6 +793,52 @@ export function isToolCallEventType<TName extends string, TInput extends Record<
 export function isToolCallEventType(toolName: string, event: ToolCallEvent): boolean {
 	return event.toolName === toolName;
 }
+
+/*
+  完整的事件体系分 4 层：
+  ┌───────────────────────┬────────────────────────────┬─────────────────────────────────────────────────────────┐
+  │         类型           │            位置            │                          用途                            │
+  ├───────────────────────┼────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ AssistantMessageEvent │ packages/ai                │ 最底层，AI SDK 的流式事件(text/thinking/tool_use)          │
+  ├───────────────────────┼────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ AgentEvent            │ packages/agent             │ agent loop 层，包装了 agent/turn/message/tool 4大生命周期  │
+  ├───────────────────────┼────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ AgentSessionEvent     │ coding-agent/agent-session │ = AgentEvent + compaction/retry 事件                    │
+  ├───────────────────────┼────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ ExtensionEvent        │ coding-agent/extensions    │ 最大的联合类型，extension hook的完整事件集                   │
+  └───────────────────────┴────────────────────────────┴─────────────────────────────────────────────────────────┘
+/*
+
+
+/*
+  💥 Extension 的 event handlers 支持的5类、22种事件:
+  + 资源发现: resources_discover
+  + session生命周期事件(10种): 
+  	 session_start
+	 session_before_switch
+	 session_switch
+	 session_before_fork
+	 session_fork
+	 session_before_compact
+	 session_compact
+	 session_before_tree
+	 session_tree (AgentSession.navigateTree() 触发)
+	 session_shutdown
+  + agent事件(6种):
+     context
+	 before_agent_start
+	 agent_start
+	 agent_end
+	 turn_start
+	 turn_end
+  + tool事件(2种):
+	 tool_call
+	 tool_result
+  + 用户输入事件(3种):
+     input
+	 user_bash
+	 model_select
+*/
 
 /** Union of all event types */
 export type ExtensionEvent =

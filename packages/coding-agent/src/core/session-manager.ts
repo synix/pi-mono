@@ -307,6 +307,8 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 	return null;
 }
 
+// 👇 从session entries中提取出当前上下文(SessionContext, 主要是message history)给 agent 使用
+
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
@@ -395,6 +397,7 @@ export function buildSessionContext(
 		}
 	};
 
+	// 🦀 compaction 重建逻辑
 	if (compaction) {
 		/*
 
@@ -855,6 +858,7 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 
 		/*
+			延迟写入优化:
 			SessionHeader 实际写入磁盘的时机是：第一条 assistant 消息到来时，和所有之前积攒的 entry 一起批量写入。
 			这个设计的目的是：如果用户打开会话但没有和 AI 对话就退出了，不会在磁盘上留下空的 session文件。
 			只有当 LLM 真正回复了，才认为这是一个有效会话，值得持久化。
@@ -1172,6 +1176,13 @@ export class SessionManager {
 	// =========================================================================
 	// Branching
 	// =========================================================================
+
+	/*
+		branch() 的实现极其简单——就是移动 leafId 指针。
+			this.leafId = branchFromId;
+		一行代码。不删除任何东西，不复制任何东西。
+		下次 appendXXX() 时，新 entry 的 parentId 会指向这个 branchFromId，自然形成分叉(branch)。
+	 */
 
 	/**
 	 * Start a new branch from an earlier entry.
