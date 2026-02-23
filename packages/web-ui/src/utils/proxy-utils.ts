@@ -69,7 +69,12 @@ export function applyProxyIfNeeded<T extends Api>(model: Model<T>, apiKey: strin
 		return model;
 	}
 
+	// 这是 CORS 代理的标准用法。
+	// 比如原始请求是: https://api.anthropic.com/v1/messages
+	// 拼接后变成: https://proxy.example.com/proxy/?url=https%3A%2F%2Fapi.anthropic.com%2Fv1%2Fmessages
 	// Apply proxy to baseUrl
+	// 浏览器把请求发给代理服务器，代理服务器从 url 查询参数里取出真实地址，在服务端转发请求，再把结果返回给浏览器。
+	// 因为浏览器→代理是同源或代理设了CORS 头，所以不会被浏览器拦截。
 	return {
 		...model,
 		baseUrl: `${proxyUrl}/?url=${encodeURIComponent(model.baseUrl)}`,

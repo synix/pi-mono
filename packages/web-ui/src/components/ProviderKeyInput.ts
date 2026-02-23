@@ -14,7 +14,7 @@ const TEST_MODELS: Record<string, string> = {
 	openai: "gpt-4o-mini",
 	google: "gemini-2.5-flash",
 	groq: "openai/gpt-oss-20b",
-	openrouter: "z-ai/glm-4.6",
+	openrouter: "anthropic/claude-opus-4.5",
 	"vercel-ai-gateway": "anthropic/claude-opus-4.5",
 	cerebras: "gpt-oss-120b",
 	xai: "grok-4-fast-non-reasoning",

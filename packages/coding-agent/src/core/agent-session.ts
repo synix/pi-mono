@@ -1626,6 +1626,25 @@ export class AgentSession {
 		this._branchSummaryAbortController?.abort();
 	}
 
+	/*
+		`_checkCompaction` 2个调用点说明了`skipAbortedCheck`这个参数的作用:
+
+		调用点 1: agent_end 事件回调里, LLM 刚回复完:
+			await this._checkCompaction(msg); // skipAbortedCheck = true(默认)
+			如果用户按了 Ctrl+C 中断(stopReason === "aborted"), 就跳过检查——用户主动取消的, 没必要压缩
+
+		调用点 2: 用户提交新消息之前(AgentSession.prompt()) (也就是下面所谓的 "pre-prompt check"):
+			这里 skipAbortedCheck 传了 false，意思是: 即使上一条 assistant 消息是 aborted 的，也要检查压缩。
+
+		为什么需要这个 pre-prompt check?
+		场景:
+			上下文已经快满了 → LLM 开始回复 → 用户按 Ctrl+C 取消 → agent_end 里因为 skipAbortedCheck=true 跳过了压缩检查。
+			此时上下文依然快满。如果没有 pre-prompt check, 用户下次发消息就会直接撞上上下文窗口上限。
+
+		所以在用户提交新 prompt 之前, 再检查一次最后的 assistant 消息(这次不跳过 aborted), 确保上下文还有空间容纳新消息。
+		简单说: agent_end 时检查是正常路径, pre-prompt check 是兜底路径, 专门捕捉因用户取消而漏掉的压缩时机。
+	*/
+
 	/**
 	 * Check if compaction is needed and run it.
 	 * Called after agent_end and before prompt submission.

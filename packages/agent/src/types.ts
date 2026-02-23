@@ -24,8 +24,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/*
 		convertToLlm(必需配置项): 过滤自定义消息类型
-		- 通过 `CustomAgentMessages` 声明合并（declaration merging）注入的 app 专属消息类型不会发给 LLM
-		- 只保留 user/assistant/toolResult message
+		- 通过 `CustomAgentMessages` 也就是declaration merging注入的 app 专属消息类型不发给 LLM
+		- 只保留 user/assistant/toolResult 这3种喂给LLM的message
 	 */
 
 	/**
@@ -59,6 +59,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 		- 中间消息摘要压缩
 		- 外部上下文注入(RAG、知识库)
 		- 消息去重
+
+    而且这里强调了transformContext() 和 convertToLlm() 的先后次序.
+    其实通过这两个函数的参数和返回值类型也不难看出, AgentMessage[] -> transformContext() -> AgentMessage[] -> convertToLlm() -> Message[]
 	*/
 
 	/**
@@ -94,13 +97,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 		┌──────────┬─────────────────────┬─────────────────────┐
 		│          │ getSteeringMessages │ getFollowUpMessages │
 		├──────────┼─────────────────────┼─────────────────────┤
-		│ 调用时机  │ 工具执行后            │ Agent 准备停止时      │
+		│ 调用时机 │ 工具执行后          │ Agent 准备停止时    │
 		├──────────┼─────────────────────┼─────────────────────┤
-		│ 用途      │ 中途打断/转向         │ 追加后续任务          │
+		│ 用途     │ 中途打断/转向       │ 追加后续任务        │
 		├──────────┼─────────────────────┼─────────────────────┤
-		│ 优先级    │ 高（跳过剩余工具）     │ 低（等 Agent 空闲）   │
+		│ 优先级   │ 高（跳过剩余工具）  │ 低（等 Agent 空闲） │
 		├──────────┼─────────────────────┼─────────────────────┤
-		│ 典型场景  │ 用户紧急干预          │ 消息队列处理           │
+		│ 典型场景 │ 用户紧急干预        │ 消息队列处理        │
 		└──────────┴─────────────────────┴─────────────────────┘
 		流程图
 
@@ -124,7 +127,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
       		Agent 停止
 	*/
 
-	// 👇 中途打断
+	// 👇 中途打断/转向
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *

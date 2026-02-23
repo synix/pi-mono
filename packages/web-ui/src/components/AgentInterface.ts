@@ -16,6 +16,9 @@ import { createStreamFn } from "../utils/proxy-utils.js";
 import type { UserMessageWithAttachments } from "./Messages.js";
 import type { StreamingMessageContainer } from "./StreamingMessageContainer.js";
 
+// @customElement装饰器会将这个AgentInterface类注册为自定义HTML元素
+// <agent-interface> 之后就可以像普通HTML标签一样在页面中使用
+// 继承 LitElement 基类, 获得响应式属性、模板渲染、生命周期等能力
 @customElement("agent-interface")
 export class AgentInterface extends LitElement {
 	// Optional external session: when provided, this component becomes a view over the session
@@ -72,6 +75,7 @@ export class AgentInterface extends LitElement {
 		}
 	}
 
+	// 组件插入到DOM时调用, 通常做初始化, 如注册event listener、加载数据
 	override async connectedCallback() {
 		super.connectedCallback();
 
@@ -80,11 +84,15 @@ export class AgentInterface extends LitElement {
 		this.style.height = "100%";
 		this.style.minHeight = "0";
 
+		// Lit 的属性变化和 DOM 更新是异步的。即改了属性后 DOM 不会立刻更新。
+		// this.updateComplete 是一个 Promise，resolve 时表示 DOM 已经更新完毕。
 		// Wait for first render to get scroll container
 		await this.updateComplete;
 		this._scrollContainer = this.querySelector(".overflow-y-auto") as HTMLElement;
 
 		if (this._scrollContainer) {
+			// 监听内容区域大小变化，如果开启了_autoScroll，就自动滚到底部。
+			// 典型场景：聊天消息流式输出时，内容不断增长导致容器高度变化，ResizeObserver 检测到变化后自动把滚动条拉到最底部，让用户始终看到最新内容。
 			// Set up ResizeObserver to detect content changes
 			this._resizeObserver = new ResizeObserver(() => {
 				if (this._autoScroll && this._scrollContainer) {
@@ -106,6 +114,7 @@ export class AgentInterface extends LitElement {
 		this.setupSessionSubscription();
 	}
 
+	// 组件从DOM移除时调用, 通常做清理, 如移除event listener
 	override disconnectedCallback() {
 		super.disconnectedCallback();
 
@@ -177,6 +186,10 @@ export class AgentInterface extends LitElement {
 		});
 	}
 
+	// 检测用户是否在手动滚动，来控制_autoScroll开关:
+	// - 用户往上滚（currentScrollTop < lastScrollTop）且离底部超过 50px → 关闭自动滚动（用户想看历史消息，不要打扰）
+	// - 滚到接近底部（离底部 < 10px）→ 重新开启自动滚动
+	// 这样流式输出时，用户上滑看历史不会被强制拉回底部，滚回底部后又会自动跟随新内容。
 	private _handleScroll = (_ev: any) => {
 		if (!this._scrollContainer) return;
 
