@@ -85,6 +85,19 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
 // Message Serialization
 // ============================================================================
 
+/** Maximum characters for a tool result in serialized summaries. */
+const TOOL_RESULT_MAX_CHARS = 2000;
+
+/**
+ * Truncate text to a maximum character length for summarization.
+ * Keeps the beginning and appends a truncation marker.
+ */
+function truncateForSummary(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	const truncatedChars = text.length - maxChars;
+	return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+}
+
 // 👇 把消息转成 [User]: ... / [Assistant]: ... 的纯文本格式
 // 这个设计意图是防止 LLM 把待摘要的对话当作正在进行的对话来回复
 
@@ -92,6 +105,9 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
  * Serialize LLM messages to text for summarization.
  * This prevents the model from treating it as a conversation to continue.
  * Call convertToLlm() first to handle custom message types.
+ *
+ * Tool results are truncated to keep the summarization request within
+ * reasonable token budgets. Full content is not needed for summarization.
  */
 export function serializeConversation(messages: Message[]): string {
 	const parts: string[] = [];
@@ -140,7 +156,7 @@ export function serializeConversation(messages: Message[]): string {
 				.map((c) => c.text)
 				.join("");
 			if (content) {
-				parts.push(`[Tool result]: ${content}`);
+				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 			}
 		}
 	}

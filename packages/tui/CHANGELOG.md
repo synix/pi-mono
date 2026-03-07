@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [0.56.3] - 2026-03-06
+
+### Added
+
+- Added xterm modifyOtherKeys mode 2 fallback when Kitty keyboard protocol is not available, enabling modified enter keys (Shift+Enter, Ctrl+Enter) inside tmux ([#1872](https://github.com/badlogic/pi-mono/issues/1872))
+
+## [0.56.2] - 2026-03-05
+
+### Added
+
+- Exported `decodeKittyPrintable()` from `keys.ts` for decoding Kitty CSI-u sequences into printable characters
+
+### Fixed
+
+- Fixed `Input` component not accepting typed characters when Kitty keyboard protocol is active (e.g., VS Code 1.110+), causing model selector filter to ignore keystrokes ([#1857](https://github.com/badlogic/pi-mono/issues/1857))
+- Fixed editor/footer visibility drift during terminal resize by forcing full redraws when terminal width or height changes ([#1844](https://github.com/badlogic/pi-mono/pull/1844) by [@ghoulr](https://github.com/ghoulr)).
+
+## [0.56.1] - 2026-03-05
+
+### Fixed
+
+- Fixed markdown blockquote rendering to isolate blockquote styling from default text style, preventing style leakage.
+
+## [0.56.0] - 2026-03-04
+
+### Fixed
+
+- Fixed TUI width calculation for regional indicator symbols (e.g. partial flag sequences like `🇨` during streaming) to prevent wrap drift and stale character artifacts in differential rendering.
+- Fixed Kitty CSI-u handling to ignore unsupported modifiers so modifier-only events do not insert stray printable characters ([#1807](https://github.com/badlogic/pi-mono/issues/1807))
+- Fixed single-line paste performance by inserting pasted text atomically instead of character-by-character, preventing repeated `@` autocomplete scans during paste ([#1812](https://github.com/badlogic/pi-mono/issues/1812))
+- Fixed `visibleWidth()` to ignore generic OSC escape sequences (including OSC 133 semantic prompt markers), preventing width drift when terminals emit semantic zone markers ([#1805](https://github.com/badlogic/pi-mono/issues/1805))
+- Fixed markdown blockquotes dropping nested list content by rendering blockquote children as block-level tokens ([#1787](https://github.com/badlogic/pi-mono/issues/1787))
+
+## [0.55.4] - 2026-03-02
+
+## [0.55.3] - 2026-02-27
+
+## [0.55.2] - 2026-02-27
+
+## [0.55.1] - 2026-02-26
+
+### Fixed
+
+- Fixed Windows VT input initialization in ESM by loading `koffi` via `createRequire`, restoring VT input mode while keeping `koffi` externalized from compiled binaries ([#1627](https://github.com/badlogic/pi-mono/pull/1627) by [@kaste](https://github.com/kaste))
+
+## [0.55.0] - 2026-02-24
+
+## [0.54.2] - 2026-02-23
+
 ## [0.54.1] - 2026-02-22
 
 ### Fixed

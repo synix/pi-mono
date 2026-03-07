@@ -15,7 +15,6 @@ import { listModels } from "./cli/list-models.js";
 import { selectSession } from "./cli/session-picker.js";
 import { APP_NAME, getAgentDir, getModelsPath, VERSION } from "./config.js";
 import { AuthStorage } from "./core/auth-storage.js";
-import { DEFAULT_THINKING_LEVEL } from "./core/defaults.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { LoadExtensionsResult } from "./core/extensions/index.js";
 import { KeybindingsManager } from "./core/keybindings.js";
@@ -63,6 +62,11 @@ function reportSettingsErrors(settingsManager: SettingsManager, context: string)
 			console.error(chalk.dim(error.stack));
 		}
 	}
+}
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
 type PackageCommand = "install" | "remove" | "update" | "list";
@@ -483,12 +487,13 @@ function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
-	// Scoped models for Ctrl+P cycling - fill in default thinking level for models without explicit level
+	// Scoped models for Ctrl+P cycling
+	// Keep thinking level undefined when not explicitly set in the model pattern.
+	// Undefined means "inherit current session thinking level" during cycling.
 	if (scopedModels.length > 0) {
-		const defaultThinkingLevel = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
 		options.scopedModels = scopedModels.map((sm) => ({
 			model: sm.model,
-			thinkingLevel: sm.thinkingLevel ?? defaultThinkingLevel,
+			thinkingLevel: sm.thinkingLevel,
 		}));
 	}
 
@@ -535,6 +540,12 @@ async function handleConfigCommand(args: string[]): Promise<boolean> {
 }
 
 export async function main(args: string[]) {
+	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
+	if (offlineMode) {
+		process.env.PI_OFFLINE = "1";
+		process.env.PI_SKIP_VERSION_CHECK = "1";
+	}
+
 	if (await handlePackageCommand(args)) {
 		return;
 	}

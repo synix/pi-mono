@@ -641,10 +641,14 @@ export async function generateSummary(
 
 	// 主摘要调 LLM 时传了 reasoning: "high", 让模型深度思考; 而 turn prefix 摘要 没传 reasoning.
 	// 这意味着主摘要的质量会更高(消耗更多 token), turn prefix 摘要 (generateTurnPrefixSummary) 用的是默认thinking level
+	const completionOptions = model.reasoning
+		? { maxTokens, signal, apiKey, reasoning: "high" as const }
+		: { maxTokens, signal, apiKey };
+
 	const response = await completeSimple(
 		model,
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		{ maxTokens, signal, apiKey, reasoning: "high" },
+		completionOptions,
 	);
 
 	if (response.stopReason === "error") {

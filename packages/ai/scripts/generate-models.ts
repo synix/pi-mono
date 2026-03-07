@@ -477,9 +477,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
-					api: "openai-completions",
+					api: "mistral-conversations",
 					provider: "mistral",
-					baseUrl: "https://api.mistral.ai/v1",
+					baseUrl: "https://api.mistral.ai",
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
@@ -523,14 +523,21 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process OpenCode Zen models
+		// Process OpenCode models (Zen and Go)
 		// API mapping based on provider.npm field:
 		// - @ai-sdk/openai → openai-responses
 		// - @ai-sdk/anthropic → anthropic-messages
 		// - @ai-sdk/google → google-generative-ai
 		// - null/undefined/@ai-sdk/openai-compatible → openai-completions
-		if (data.opencode?.models) {
-			for (const [modelId, model] of Object.entries(data.opencode.models)) {
+		const opencodeVariants = [
+			{ key: "opencode", provider: "opencode", basePath: "https://opencode.ai/zen" },
+			{ key: "opencode-go", provider: "opencode-go", basePath: "https://opencode.ai/zen/go" },
+		] as const;
+
+		for (const variant of opencodeVariants) {
+			if (!data[variant.key]?.models) continue;
+
+			for (const [modelId, model] of Object.entries(data[variant.key].models)) {
 				const m = model as ModelsDevModel & { status?: string };
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
@@ -541,25 +548,25 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				if (npm === "@ai-sdk/openai") {
 					api = "openai-responses";
-					baseUrl = "https://opencode.ai/zen/v1";
+					baseUrl = `${variant.basePath}/v1`;
 				} else if (npm === "@ai-sdk/anthropic") {
 					api = "anthropic-messages";
 					// Anthropic SDK appends /v1/messages to baseURL
-					baseUrl = "https://opencode.ai/zen";
+					baseUrl = variant.basePath;
 				} else if (npm === "@ai-sdk/google") {
 					api = "google-generative-ai";
-					baseUrl = "https://opencode.ai/zen/v1";
+					baseUrl = `${variant.basePath}/v1`;
 				} else {
 					// null, undefined, or @ai-sdk/openai-compatible
 					api = "openai-completions";
-					baseUrl = "https://opencode.ai/zen/v1";
+					baseUrl = `${variant.basePath}/v1`;
 				}
 
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
 					api,
-					provider: "opencode",
+					provider: variant.provider,
 					baseUrl,
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
@@ -703,7 +710,10 @@ async function generateModels() {
 	const aiGatewayModels = await fetchAiGatewayModels();
 
 	// Combine models (models.dev has priority)
-	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels];
+	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
+		(model) =>
+			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
+	);
 
 	// 👇 这些都是临时补丁, 用来修正 models.dev 上游数据的错误, 补齐缺失的模型信息
 
@@ -722,14 +732,41 @@ async function generateModels() {
 			candidate.cost.cacheWrite = 6.25;
 			candidate.contextWindow = 200000;
 		}
-		if ((candidate.provider === "anthropic" || candidate.provider === "opencode") && candidate.id === "claude-opus-4-6") {
+		if (
+			(candidate.provider === "anthropic" || candidate.provider === "opencode" || candidate.provider === "opencode-go") &&
+			candidate.id === "claude-opus-4-6"
+		) {
 			candidate.contextWindow = 200000;
 		}
-		// opencode lists Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
-		if (candidate.provider === "opencode" && (candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4")) {
+		// OpenCode variants list Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
+		if (
+			(candidate.provider === "opencode" || candidate.provider === "opencode-go") &&
+			(candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4")
+		) {
 			candidate.contextWindow = 200000;
+		}
+		if ((candidate.provider === "opencode" || candidate.provider === "opencode-go") && candidate.id === "gpt-5.4") {
+			candidate.contextWindow = 272000;
+			candidate.maxTokens = 128000;
+		}
+		if (candidate.provider === "openai" && candidate.id === "gpt-5.4") {
+			candidate.contextWindow = 272000;
+			candidate.maxTokens = 128000;
+		}
+		// Keep selected OpenRouter model metadata stable until upstream settles.
+		if (candidate.provider === "openrouter" && candidate.id === "moonshotai/kimi-k2.5") {
+			candidate.cost.input = 0.41;
+			candidate.cost.output = 2.06;
+			candidate.cost.cacheRead = 0.07;
+			candidate.maxTokens = 4096;
+		}
+		if (candidate.provider === "openrouter" && candidate.id === "z-ai/glm-5") {
+			candidate.cost.input = 0.6;
+			candidate.cost.output = 1.9;
+			candidate.cost.cacheRead = 0.119;
 		}
 	}
+
 
 	// Add missing EU Opus 4.6 profile
 	if (!allModels.some((m) => m.provider === "amazon-bedrock" && m.id === "eu.anthropic.claude-opus-4-6-v1")) {
@@ -791,6 +828,27 @@ async function generateModels() {
 			},
 			contextWindow: 200000,
 			maxTokens: 64000,
+		});
+	}
+
+	// Add missing Gemini 3.1 Flash Lite Preview until models.dev includes it.
+	if (!allModels.some((m) => m.provider === "google" && m.id === "gemini-3.1-flash-lite-preview")) {
+		allModels.push({
+			id: "gemini-3.1-flash-lite-preview",
+			name: "Gemini 3.1 Flash Lite Preview",
+			api: "google-generative-ai",
+			baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+			provider: "google",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 65536,
 		});
 	}
 
@@ -875,6 +933,40 @@ async function generateModels() {
 		});
 	}
 
+	// Add missing GitHub Copilot GPT-5.3 models until models.dev includes them.
+	const copilotBaseModel = allModels.find(
+		(m) => m.provider === "github-copilot" && m.id === "gpt-5.2-codex",
+	);
+	if (copilotBaseModel) {
+		if (!allModels.some((m) => m.provider === "github-copilot" && m.id === "gpt-5.3-codex")) {
+			allModels.push({
+				...copilotBaseModel,
+				id: "gpt-5.3-codex",
+				name: "GPT-5.3 Codex",
+			});
+		}
+	}
+
+	if (!allModels.some((m) => m.provider === "openai" && m.id === "gpt-5.4")) {
+		allModels.push({
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2.5,
+				output: 15,
+				cacheRead: 0.25,
+				cacheWrite: 0,
+			},
+			contextWindow: 272000,
+			maxTokens: 128000,
+		});
+	}
+
 	// OpenAI Codex (ChatGPT OAuth) models
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Context window is based on observed server limits (400s above ~272k), not marketing numbers.
@@ -951,6 +1043,18 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
@@ -1077,6 +1181,18 @@ async function generateModels() {
 			contextWindow: 1048576,
 			maxTokens: 65535,
 		},
+		{
+			id: "gemini-3.1-pro-preview",
+			name: "Gemini 3.1 Pro Preview (Cloud Code Assist)",
+			api: "google-gemini-cli",
+			provider: "google-gemini-cli",
+			baseUrl: CLOUD_CODE_ASSIST_ENDPOINT,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 65535,
+		},
 	];
 	allModels.push(...cloudCodeAssistModels);
 
@@ -1085,8 +1201,8 @@ async function generateModels() {
 	const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 	const antigravityModels: Model<"google-gemini-cli">[] = [
 		{
-			id: "gemini-3-pro-high",
-			name: "Gemini 3 Pro High (Antigravity)",
+			id: "gemini-3.1-pro-high",
+			name: "Gemini 3.1 Pro High (Antigravity)",
 			api: "google-gemini-cli",
 			provider: "google-antigravity",
 			baseUrl: ANTIGRAVITY_ENDPOINT,
@@ -1098,8 +1214,8 @@ async function generateModels() {
 			maxTokens: 65535,
 		},
 		{
-			id: "gemini-3-pro-low",
-			name: "Gemini 3 Pro Low (Antigravity)",
+			id: "gemini-3.1-pro-low",
+			name: "Gemini 3.1 Pro Low (Antigravity)",
 			api: "google-gemini-cli",
 			provider: "google-antigravity",
 			baseUrl: ANTIGRAVITY_ENDPOINT,
@@ -1169,6 +1285,18 @@ async function generateModels() {
 			cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 			contextWindow: 200000,
 			maxTokens: 128000,
+		},
+		{
+			id: "claude-sonnet-4-6",
+			name: "Claude Sonnet 4.6 (Antigravity)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: ANTIGRAVITY_ENDPOINT,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			contextWindow: 200000,
+			maxTokens: 64000,
 		},
 		{
 			id: "gpt-oss-120b-medium",

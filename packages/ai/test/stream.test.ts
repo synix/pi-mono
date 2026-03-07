@@ -490,26 +490,6 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses Provider (gpt-5-mini)", () => {
-		const model = getModel("openai", "gpt-5-mini");
-
-		it("should complete basic text generation", { retry: 3 }, async () => {
-			await basicTextGeneration(model);
-		});
-
-		it("should handle tool calling", { retry: 3 }, async () => {
-			await handleToolCall(model);
-		});
-
-		it("should handle streaming", { retry: 3 }, async () => {
-			await handleStreaming(model);
-		});
-
-		it("should handle image input", { retry: 3 }, async () => {
-			await handleImage(model);
-		});
-	});
-
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider (gpt-4o-mini)", () => {
 		const llm = getModel("azure-openai-responses", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(llm.id);
@@ -737,32 +717,8 @@ describe("Generate E2E Tests", () => {
 		},
 	);
 
-	describe.skipIf(!process.env.ZAI_API_KEY)("zAI Provider (glm-4.5-air via OpenAI Completions)", () => {
-		const llm = getModel("zai", "glm-4.5-air");
-
-		it("should complete basic text generation", { retry: 3 }, async () => {
-			await basicTextGeneration(llm);
-		});
-
-		it("should handle tool calling", { retry: 3 }, async () => {
-			await handleToolCall(llm);
-		});
-
-		it("should handle streaming", { retry: 3 }, async () => {
-			await handleStreaming(llm);
-		});
-
-		it.skip("should handle thinking mode", { retry: 3 }, async () => {
-			await handleThinking(llm, { reasoningEffort: "medium" });
-		});
-
-		it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
-			await multiTurn(llm, { reasoningEffort: "medium" });
-		});
-	});
-
-	describe.skipIf(!process.env.ZAI_API_KEY)("zAI Provider (glm-4.5v via OpenAI Completions)", () => {
-		const llm = getModel("zai", "glm-4.5v");
+	describe.skipIf(!process.env.ZAI_API_KEY)("zAI Provider (glm-5 via OpenAI Completions)", () => {
+		const llm = getModel("zai", "glm-5");
 
 		it("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm);
@@ -789,34 +745,30 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.MISTRAL_API_KEY)(
-		"Mistral Provider (devstral-medium-latest via OpenAI Completions)",
-		() => {
-			const llm = getModel("mistral", "devstral-medium-latest");
+	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (devstral-medium-latest)", () => {
+		const llm = getModel("mistral", "devstral-medium-latest");
 
-			it("should complete basic text generation", { retry: 3 }, async () => {
-				await basicTextGeneration(llm);
-			});
+		it("should complete basic text generation", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
 
-			it("should handle tool calling", { retry: 3 }, async () => {
-				await handleToolCall(llm);
-			});
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm);
+		});
 
-			it("should handle streaming", { retry: 3 }, async () => {
-				await handleStreaming(llm);
-			});
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm);
+		});
 
-			it("should handle thinking mode", { retry: 3 }, async () => {
-				// FIXME Skip for now, getting a 422 status code, need to test with official SDK
-				// const llm = getModel("mistral", "magistral-medium-latest");
-				// await handleThinking(llm, { reasoningEffort: "medium" });
-			});
+		it("should handle thinking mode", { retry: 3 }, async () => {
+			const llm = getModel("mistral", "magistral-medium-latest");
+			await handleThinking(llm, { reasoningEffort: "medium" });
+		});
 
-			it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
-				await multiTurn(llm, { reasoningEffort: "medium" });
-			});
-		},
-	);
+		it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+			await multiTurn(llm, { reasoningEffort: "medium" });
+		});
+	});
 
 	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (pixtral-12b with image support)", () => {
 		const llm = getModel("mistral", "pixtral-12b");
@@ -958,8 +910,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe("GitHub Copilot Provider (gpt-4o via OpenAI Completions)", () => {
-		const llm = getModel("github-copilot", "gpt-4o");
+	describe("GitHub Copilot Provider (gpt-5.3-codex via OpenAI Completions)", () => {
+		const llm = getModel("github-copilot", "gpt-5.3-codex");
 
 		it.skipIf(!githubCopilotToken)("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm, { apiKey: githubCopilotToken });
@@ -1056,8 +1008,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe("Google Antigravity Provider (gemini-3-pro-high)", () => {
-		const llm = getModel("google-antigravity", "gemini-3-pro-high");
+	describe("Google Antigravity Provider (gemini-3.1-pro-high)", () => {
+		const llm = getModel("google-antigravity", "gemini-3.1-pro-high");
 
 		it.skipIf(!antigravityToken)("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm, { apiKey: antigravityToken });
@@ -1088,8 +1040,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe("Google Antigravity Provider (gemini-3-pro-high with thinkingLevel)", () => {
-		const llm = getModel("google-antigravity", "gemini-3-pro-high");
+	describe("Google Antigravity Provider (gemini-3.1-pro-high with thinkingLevel)", () => {
+		const llm = getModel("google-antigravity", "gemini-3.1-pro-high");
 
 		it.skipIf(!antigravityToken)("should handle thinking with thinkingLevel HIGH", { retry: 3 }, async () => {
 			// gemini-3-pro only supports LOW/HIGH
