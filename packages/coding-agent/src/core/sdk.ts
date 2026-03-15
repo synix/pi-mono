@@ -345,6 +345,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		// See packages/agent/src/types.ts
 		convertToLlm: convertToLlmWithBlockImages,
+		onPayload: async (payload, _model) => {
+			const runner = extensionRunnerRef.current;
+			if (!runner?.hasHandlers("before_provider_request")) {
+				return payload;
+			}
+			return runner.emitBeforeProviderRequest(payload);
+		},
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;

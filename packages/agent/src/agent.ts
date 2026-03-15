@@ -8,21 +8,27 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
+	type SimpleStreamOptions,
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
 	type Transport,
 } from "@mariozechner/pi-ai";
-import { agentLoop, agentLoopContinue } from "./agent-loop.js";
+import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.js";
 import type {
+	AfterToolCallContext,
+	AfterToolCallResult,
 	AgentContext,
 	AgentEvent,
 	AgentLoopConfig,
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	BeforeToolCallContext,
+	BeforeToolCallResult,
 	StreamFn,
 	ThinkingLevel,
+	ToolExecutionMode,
 } from "./types.js";
 
 /**
@@ -75,6 +81,11 @@ export interface AgentOptions {
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 
 	/**
+	 * Inspect or replace provider payloads before they are sent.
+	 */
+	onPayload?: SimpleStreamOptions["onPayload"];
+
+	/**
 	 * Custom token budgets for thinking levels (token-based providers only).
 	 */
 	thinkingBudgets?: ThinkingBudgets;
@@ -91,6 +102,15 @@ export interface AgentOptions {
 	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
 	 */
 	maxRetryDelayMs?: number;
+
+	/** Tool execution mode. Default: "parallel" */
+	toolExecution?: ToolExecutionMode;
+
+	/** Called before a tool is executed, after arguments have been validated. */
+	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+
+	/** Called after a tool finishes executing, before final tool events are emitted. */
+	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 }
 
 export class Agent {
@@ -126,11 +146,21 @@ export class Agent {
 	public streamFn: StreamFn;
 	private _sessionId?: string;
 	public getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+	private _onPayload?: SimpleStreamOptions["onPayload"];
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
 	private _thinkingBudgets?: ThinkingBudgets;
 	private _transport: Transport;
 	private _maxRetryDelayMs?: number;
+	private _toolExecution: ToolExecutionMode;
+	private _beforeToolCall?: (
+		context: BeforeToolCallContext,
+		signal?: AbortSignal,
+	) => Promise<BeforeToolCallResult | undefined>;
+	private _afterToolCall?: (
+		context: AfterToolCallContext,
+		signal?: AbortSignal,
+	) => Promise<AfterToolCallResult | undefined>;
 
 	constructor(opts: AgentOptions = {}) {
 		this._state = { ...this._state, ...opts.initialState };
@@ -142,9 +172,13 @@ export class Agent {
 		this.streamFn = opts.streamFn || streamSimple;
 		this._sessionId = opts.sessionId;
 		this.getApiKey = opts.getApiKey;
+		this._onPayload = opts.onPayload;
 		this._thinkingBudgets = opts.thinkingBudgets;
 		this._transport = opts.transport ?? "sse";
 		this._maxRetryDelayMs = opts.maxRetryDelayMs;
+		this._toolExecution = opts.toolExecution ?? "parallel";
+		this._beforeToolCall = opts.beforeToolCall;
+		this._afterToolCall = opts.afterToolCall;
 	}
 
 	/**
@@ -203,6 +237,30 @@ export class Agent {
 	 */
 	set maxRetryDelayMs(value: number | undefined) {
 		this._maxRetryDelayMs = value;
+	}
+
+	get toolExecution(): ToolExecutionMode {
+		return this._toolExecution;
+	}
+
+	setToolExecution(value: ToolExecutionMode) {
+		this._toolExecution = value;
+	}
+
+	setBeforeToolCall(
+		value:
+			| ((context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>)
+			| undefined,
+	) {
+		this._beforeToolCall = value;
+	}
+
+	setAfterToolCall(
+		value:
+			| ((context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>)
+			| undefined,
+	) {
+		this._afterToolCall = value;
 	}
 
 	get state(): AgentState {
@@ -433,6 +491,50 @@ export class Agent {
 		await this._runLoop(undefined);
 	}
 
+	private _processLoopEvent(event: AgentEvent): void {
+		switch (event.type) {
+			case "message_start":
+				this._state.streamMessage = event.message;
+				break;
+
+			case "message_update":
+				this._state.streamMessage = event.message;
+				break;
+
+			case "message_end":
+				this._state.streamMessage = null;
+				this.appendMessage(event.message);
+				break;
+
+			case "tool_execution_start": {
+				const pendingToolCalls = new Set(this._state.pendingToolCalls);
+				pendingToolCalls.add(event.toolCallId);
+				this._state.pendingToolCalls = pendingToolCalls;
+				break;
+			}
+
+			case "tool_execution_end": {
+				const pendingToolCalls = new Set(this._state.pendingToolCalls);
+				pendingToolCalls.delete(event.toolCallId);
+				this._state.pendingToolCalls = pendingToolCalls;
+				break;
+			}
+
+			case "turn_end":
+				if (event.message.role === "assistant" && (event.message as any).errorMessage) {
+					this._state.error = (event.message as any).errorMessage;
+				}
+				break;
+
+			case "agent_end":
+				this._state.isStreaming = false;
+				this._state.streamMessage = null;
+				break;
+		}
+
+		this.emit(event);
+	}
+
 	/**
 	 * Run the agent loop.
 	 * If messages are provided, starts a new conversation turn with those messages.
@@ -466,9 +568,13 @@ export class Agent {
 			model,
 			reasoning,
 			sessionId: this._sessionId,
+			onPayload: this._onPayload,
 			transport: this._transport,
 			thinkingBudgets: this._thinkingBudgets,
 			maxRetryDelayMs: this._maxRetryDelayMs,
+			toolExecution: this._toolExecution,
+			beforeToolCall: this._beforeToolCall,
+			afterToolCall: this._afterToolCall,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
@@ -482,77 +588,24 @@ export class Agent {
 			getFollowUpMessages: async () => this.dequeueFollowUpMessages(),
 		};
 
-		let partial: AgentMessage | null = null;
-
 		try {
-			const stream = messages
-				? agentLoop(messages, context, config, this.abortController.signal, this.streamFn)
-				: agentLoopContinue(context, config, this.abortController.signal, this.streamFn);
-
-			for await (const event of stream) {
-				// Update internal state based on events
-				switch (event.type) {
-					case "message_start":
-						partial = event.message;
-						this._state.streamMessage = event.message;
-						break;
-
-					case "message_update":
-						partial = event.message;
-						this._state.streamMessage = event.message;
-						break;
-
-					case "message_end":
-						partial = null;
-						this._state.streamMessage = null;
-						this.appendMessage(event.message);
-						break;
-
-					case "tool_execution_start": {
-						const s = new Set(this._state.pendingToolCalls);
-						s.add(event.toolCallId);
-						this._state.pendingToolCalls = s;
-						break;
-					}
-
-					case "tool_execution_end": {
-						const s = new Set(this._state.pendingToolCalls);
-						s.delete(event.toolCallId);
-						this._state.pendingToolCalls = s;
-						break;
-					}
-
-					case "turn_end":
-						if (event.message.role === "assistant" && (event.message as any).errorMessage) {
-							this._state.error = (event.message as any).errorMessage;
-						}
-						break;
-
-					case "agent_end":
-						this._state.isStreaming = false;
-						this._state.streamMessage = null;
-						break;
-				}
-
-				// Emit to listeners
-				this.emit(event);
-			}
-
-			// Handle any remaining partial message
-			if (partial && partial.role === "assistant" && partial.content.length > 0) {
-				const onlyEmpty = !partial.content.some(
-					(c) =>
-						(c.type === "thinking" && c.thinking.trim().length > 0) ||
-						(c.type === "text" && c.text.trim().length > 0) ||
-						(c.type === "toolCall" && c.name.trim().length > 0),
+			if (messages) {
+				await runAgentLoop(
+					messages,
+					context,
+					config,
+					async (event) => this._processLoopEvent(event),
+					this.abortController.signal,
+					this.streamFn,
 				);
-				if (!onlyEmpty) {
-					this.appendMessage(partial);
-				} else {
-					if (this.abortController?.signal.aborted) {
-						throw new Error("Request was aborted");
-					}
-				}
+			} else {
+				await runAgentLoopContinue(
+					context,
+					config,
+					async (event) => this._processLoopEvent(event),
+					this.abortController.signal,
+					this.streamFn,
+				);
 			}
 		} catch (err: any) {
 			const errorMsg: AgentMessage = {

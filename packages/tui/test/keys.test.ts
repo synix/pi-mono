@@ -54,6 +54,16 @@ describe("matchesKey", () => {
 			setKittyProtocolActive(false);
 		});
 
+		it("should match digit bindings via Kitty CSI-u", () => {
+			setKittyProtocolActive(true);
+			assert.strictEqual(matchesKey("\x1b[49u", "1"), true);
+			assert.strictEqual(matchesKey("\x1b[49;5u", "ctrl+1"), true);
+			assert.strictEqual(matchesKey("\x1b[49;5u", "ctrl+2"), false);
+			assert.strictEqual(parseKey("\x1b[49u"), "1");
+			assert.strictEqual(parseKey("\x1b[49;5u"), "ctrl+1");
+			setKittyProtocolActive(false);
+		});
+
 		it("should handle shifted key in format", () => {
 			setKittyProtocolActive(true);
 			// Format with shifted key: CSI codepoint:shifted:base;modifier u
@@ -115,6 +125,60 @@ describe("matchesKey", () => {
 			const cyrillicCtrlC = "\x1b[1089::99;5u";
 			assert.strictEqual(matchesKey(cyrillicCtrlC, "ctrl+shift+c"), false);
 			setKittyProtocolActive(false);
+		});
+	});
+
+	describe("modifyOtherKeys matching", () => {
+		it("should match xterm modifyOtherKeys Ctrl+c", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;99~", "ctrl+c"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;99~"), "ctrl+c");
+		});
+
+		it("should match xterm modifyOtherKeys Ctrl+d", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;100~", "ctrl+d"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;100~"), "ctrl+d");
+		});
+
+		it("should match xterm modifyOtherKeys Ctrl+z", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;122~", "ctrl+z"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;122~"), "ctrl+z");
+		});
+
+		it("should match xterm modifyOtherKeys Enter variants", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;13~", "ctrl+enter"), true);
+			assert.strictEqual(matchesKey("\x1b[27;2;13~", "shift+enter"), true);
+			assert.strictEqual(matchesKey("\x1b[27;3;13~", "alt+enter"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;13~"), "ctrl+enter");
+			assert.strictEqual(parseKey("\x1b[27;2;13~"), "shift+enter");
+			assert.strictEqual(parseKey("\x1b[27;3;13~"), "alt+enter");
+		});
+
+		it("should match xterm modifyOtherKeys Tab variants", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;2;9~", "shift+tab"), true);
+			assert.strictEqual(matchesKey("\x1b[27;5;9~", "ctrl+tab"), true);
+			assert.strictEqual(matchesKey("\x1b[27;3;9~", "alt+tab"), true);
+			assert.strictEqual(parseKey("\x1b[27;2;9~"), "shift+tab");
+			assert.strictEqual(parseKey("\x1b[27;5;9~"), "ctrl+tab");
+			assert.strictEqual(parseKey("\x1b[27;3;9~"), "alt+tab");
+		});
+
+		it("should match xterm modifyOtherKeys symbol combos", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;47~", "ctrl+/"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;47~"), "ctrl+/");
+		});
+
+		it("should match xterm modifyOtherKeys digit combos", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;49~", "ctrl+1"), true);
+			assert.strictEqual(matchesKey("\x1b[27;2;49~", "shift+1"), true);
+			assert.strictEqual(parseKey("\x1b[27;5;49~"), "ctrl+1");
+			assert.strictEqual(parseKey("\x1b[27;2;49~"), "shift+1");
 		});
 	});
 
@@ -188,6 +252,20 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\x1b\x1f"), "ctrl+alt+-");
 		});
 
+		it("should distinguish backspace (0x7f) from ctrl+backspace (0x08)", () => {
+			setKittyProtocolActive(false);
+			// 0x7f is plain backspace
+			assert.strictEqual(matchesKey("\x7f", "backspace"), true);
+			assert.strictEqual(matchesKey("\x7f", "ctrl+backspace"), false);
+			assert.strictEqual(parseKey("\x7f"), "backspace");
+			// 0x08 is ctrl+backspace (Windows Terminal sends this for Ctrl+Backspace)
+			assert.strictEqual(matchesKey("\x08", "ctrl+backspace"), true);
+			assert.strictEqual(matchesKey("\x08", "backspace"), false);
+			assert.strictEqual(parseKey("\x08"), "ctrl+backspace");
+			// 0x08 also matches ctrl+h (same byte, ambiguous in legacy terminals)
+			assert.strictEqual(matchesKey("\x08", "ctrl+h"), true);
+		});
+
 		it("should parse legacy alt-prefixed sequences when kitty inactive", () => {
 			setKittyProtocolActive(false);
 			assert.strictEqual(matchesKey("\x1b ", "alt+space"), true);
@@ -202,6 +280,8 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\x1bF"), "alt+right");
 			assert.strictEqual(matchesKey("\x1ba", "alt+a"), true);
 			assert.strictEqual(parseKey("\x1ba"), "alt+a");
+			assert.strictEqual(matchesKey("\x1b1", "alt+1"), true);
+			assert.strictEqual(parseKey("\x1b1"), "alt+1");
 			assert.strictEqual(matchesKey("\x1by", "alt+y"), true);
 			assert.strictEqual(parseKey("\x1by"), "alt+y");
 			assert.strictEqual(matchesKey("\x1bz", "alt+z"), true);
@@ -220,6 +300,8 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\x1bF"), undefined);
 			assert.strictEqual(matchesKey("\x1ba", "alt+a"), false);
 			assert.strictEqual(parseKey("\x1ba"), undefined);
+			assert.strictEqual(matchesKey("\x1b1", "alt+1"), false);
+			assert.strictEqual(parseKey("\x1b1"), undefined);
 			assert.strictEqual(matchesKey("\x1by", "alt+y"), false);
 			assert.strictEqual(parseKey("\x1by"), undefined);
 			setKittyProtocolActive(false);
@@ -316,6 +398,8 @@ describe("parseKey", () => {
 			assert.strictEqual(parseKey("\n"), "enter");
 			assert.strictEqual(parseKey("\x00"), "ctrl+space");
 			assert.strictEqual(parseKey(" "), "space");
+			assert.strictEqual(parseKey("1"), "1");
+			assert.strictEqual(matchesKey("1", "1"), true);
 		});
 
 		it("should parse arrow keys", () => {

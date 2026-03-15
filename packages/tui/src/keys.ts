@@ -71,6 +71,8 @@ type Letter =
 	| "y"
 	| "z";
 
+type Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
 type SymbolKey =
 	| "`"
 	| "-"
@@ -136,7 +138,7 @@ type SpecialKey =
 	| "f11"
 	| "f12";
 
-type BaseKey = Letter | SymbolKey | SpecialKey;
+type BaseKey = Letter | Digit | SymbolKey | SpecialKey;
 
 /**
  * Union type of all valid key identifiers.
@@ -470,6 +472,11 @@ interface ParsedKittySequence {
 	eventType: KeyEventType;
 }
 
+interface ParsedModifyOtherKeysSequence {
+	codepoint: number;
+	modifier: number;
+}
+
 // Store the last parsed event type for isKeyRelease() to query
 let _lastEventType: KeyEventType = "press";
 
@@ -637,19 +644,23 @@ function matchesKittySequence(data: string, expectedCodepoint: number, expectedM
 	return false;
 }
 
+function parseModifyOtherKeysSequence(data: string): ParsedModifyOtherKeysSequence | null {
+	const match = data.match(/^\x1b\[27;(\d+);(\d+)~$/);
+	if (!match) return null;
+	const modValue = parseInt(match[1]!, 10);
+	const codepoint = parseInt(match[2]!, 10);
+	return { codepoint, modifier: modValue - 1 };
+}
+
 /**
  * Match xterm modifyOtherKeys format: CSI 27 ; modifiers ; keycode ~
  * This is used by terminals when Kitty protocol is not enabled.
  * Modifier values are 1-indexed: 2=shift, 3=alt, 5=ctrl, etc.
  */
 function matchesModifyOtherKeys(data: string, expectedKeycode: number, expectedModifier: number): boolean {
-	const match = data.match(/^\x1b\[27;(\d+);(\d+)~$/);
-	if (!match) return false;
-	const modValue = parseInt(match[1]!, 10);
-	const keycode = parseInt(match[2]!, 10);
-	// Convert from 1-indexed xterm format to our 0-indexed format
-	const actualMod = modValue - 1;
-	return keycode === expectedKeycode && actualMod === expectedModifier;
+	const parsed = parseModifyOtherKeysSequence(data);
+	if (!parsed) return false;
+	return parsed.codepoint === expectedKeycode && parsed.modifier === expectedModifier;
 }
 
 // =============================================================================
@@ -676,6 +687,26 @@ function rawCtrlChar(key: string): string | null {
 		return String.fromCharCode(31); // Same as Ctrl+_
 	}
 	return null;
+}
+
+function isDigitKey(key: string): boolean {
+	return key >= "0" && key <= "9";
+}
+
+function matchesPrintableModifyOtherKeys(data: string, expectedKeycode: number, expectedModifier: number): boolean {
+	if (expectedModifier === 0) return false;
+	return matchesModifyOtherKeys(data, expectedKeycode, expectedModifier);
+}
+
+function formatKeyNameWithModifiers(keyName: string, modifier: number): string | undefined {
+	const mods: string[] = [];
+	const effectiveMod = modifier & ~LOCK_MASK;
+	const supportedModifierMask = MODIFIERS.shift | MODIFIERS.ctrl | MODIFIERS.alt;
+	if ((effectiveMod & ~supportedModifierMask) !== 0) return undefined;
+	if (effectiveMod & MODIFIERS.shift) mods.push("shift");
+	if (effectiveMod & MODIFIERS.ctrl) mods.push("ctrl");
+	if (effectiveMod & MODIFIERS.alt) mods.push("alt");
+	return mods.length > 0 ? `${mods.join("+")}+${keyName}` : keyName;
 }
 
 function parseKeyId(keyId: string): { key: string; ctrl: boolean; shift: boolean; alt: boolean } | null {
@@ -738,12 +769,19 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 
 		case "tab":
 			if (shift && !ctrl && !alt) {
-				return data === "\x1b[Z" || matchesKittySequence(data, CODEPOINTS.tab, MODIFIERS.shift);
+				return (
+					data === "\x1b[Z" ||
+					matchesKittySequence(data, CODEPOINTS.tab, MODIFIERS.shift) ||
+					matchesModifyOtherKeys(data, CODEPOINTS.tab, MODIFIERS.shift)
+				);
 			}
 			if (modifier === 0) {
 				return data === "\t" || matchesKittySequence(data, CODEPOINTS.tab, 0);
 			}
-			return matchesKittySequence(data, CODEPOINTS.tab, modifier);
+			return (
+				matchesKittySequence(data, CODEPOINTS.tab, modifier) ||
+				matchesModifyOtherKeys(data, CODEPOINTS.tab, modifier)
+			);
 
 		case "enter":
 		case "return":
@@ -797,7 +835,8 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 			}
 			return (
 				matchesKittySequence(data, CODEPOINTS.enter, modifier) ||
-				matchesKittySequence(data, CODEPOINTS.kpEnter, modifier)
+				matchesKittySequence(data, CODEPOINTS.kpEnter, modifier) ||
+				matchesModifyOtherKeys(data, CODEPOINTS.enter, modifier)
 			);
 
 		case "backspace":
@@ -807,8 +846,14 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 				}
 				return matchesKittySequence(data, CODEPOINTS.backspace, MODIFIERS.alt);
 			}
+			if (ctrl && !alt && !shift) {
+				// Legacy: 0x08 (BS) is sent by Windows Terminal for Ctrl+Backspace.
+				// Also matches Ctrl+H (same byte, ambiguous in legacy terminals).
+				if (data === "\x08") return true;
+				return matchesKittySequence(data, CODEPOINTS.backspace, MODIFIERS.ctrl);
+			}
 			if (modifier === 0) {
-				return data === "\x7f" || data === "\x08" || matchesKittySequence(data, CODEPOINTS.backspace, 0);
+				return data === "\x7f" || matchesKittySequence(data, CODEPOINTS.backspace, 0);
 			}
 			return matchesKittySequence(data, CODEPOINTS.backspace, modifier);
 
@@ -994,39 +1039,53 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 		}
 	}
 
-	// Handle single letter keys (a-z) and some symbols
-	if (key.length === 1 && ((key >= "a" && key <= "z") || SYMBOL_KEYS.has(key))) {
+	// Handle single letter/digit keys and symbols
+	if (key.length === 1 && ((key >= "a" && key <= "z") || isDigitKey(key) || SYMBOL_KEYS.has(key))) {
 		const codepoint = key.charCodeAt(0);
 		const rawCtrl = rawCtrlChar(key);
+		const isLetter = key >= "a" && key <= "z";
+		const isDigit = isDigitKey(key);
 
 		if (ctrl && alt && !shift && !_kittyProtocolActive && rawCtrl) {
 			// Legacy: ctrl+alt+key is ESC followed by the control character
 			return data === `\x1b${rawCtrl}`;
 		}
 
-		if (alt && !ctrl && !shift && !_kittyProtocolActive && key >= "a" && key <= "z") {
-			// Legacy: alt+letter is ESC followed by the letter
+		if (alt && !ctrl && !shift && !_kittyProtocolActive && (isLetter || isDigit)) {
+			// Legacy: alt+letter/digit is ESC followed by the key
 			if (data === `\x1b${key}`) return true;
 		}
 
 		if (ctrl && !shift && !alt) {
 			// Legacy: ctrl+key sends the control character
 			if (rawCtrl && data === rawCtrl) return true;
-			return matchesKittySequence(data, codepoint, MODIFIERS.ctrl);
+			return (
+				matchesKittySequence(data, codepoint, MODIFIERS.ctrl) ||
+				matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.ctrl)
+			);
 		}
 
 		if (ctrl && shift && !alt) {
-			return matchesKittySequence(data, codepoint, MODIFIERS.shift + MODIFIERS.ctrl);
+			return (
+				matchesKittySequence(data, codepoint, MODIFIERS.shift + MODIFIERS.ctrl) ||
+				matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.shift + MODIFIERS.ctrl)
+			);
 		}
 
 		if (shift && !ctrl && !alt) {
 			// Legacy: shift+letter produces uppercase
-			if (data === key.toUpperCase()) return true;
-			return matchesKittySequence(data, codepoint, MODIFIERS.shift);
+			if (isLetter && data === key.toUpperCase()) return true;
+			return (
+				matchesKittySequence(data, codepoint, MODIFIERS.shift) ||
+				matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.shift)
+			);
 		}
 
 		if (modifier !== 0) {
-			return matchesKittySequence(data, codepoint, modifier);
+			return (
+				matchesKittySequence(data, codepoint, modifier) ||
+				matchesPrintableModifyOtherKeys(data, codepoint, modifier)
+			);
 		}
 
 		// Check both raw char and Kitty sequence (needed for release events)
@@ -1042,50 +1101,50 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
  * @param data - Raw input data from terminal
  * @returns Key identifier string (e.g., "ctrl+c") or undefined
  */
+function formatParsedKey(codepoint: number, modifier: number, baseLayoutKey?: number): string | undefined {
+	// Use base layout key only when codepoint is not a recognized Latin
+	// letter (a-z), digit (0-9), or symbol (/, -, [, ;, etc.). For those,
+	// the codepoint is authoritative regardless of physical key position.
+	// This prevents remapped layouts (Dvorak, Colemak, xremap, etc.) from
+	// reporting the wrong key name based on the QWERTY physical position.
+	const isLatinLetter = codepoint >= 97 && codepoint <= 122; // a-z
+	const isDigit = codepoint >= 48 && codepoint <= 57; // 0-9
+	const isKnownSymbol = SYMBOL_KEYS.has(String.fromCharCode(codepoint));
+	const effectiveCodepoint = isLatinLetter || isDigit || isKnownSymbol ? codepoint : (baseLayoutKey ?? codepoint);
+
+	let keyName: string | undefined;
+	if (effectiveCodepoint === CODEPOINTS.escape) keyName = "escape";
+	else if (effectiveCodepoint === CODEPOINTS.tab) keyName = "tab";
+	else if (effectiveCodepoint === CODEPOINTS.enter || effectiveCodepoint === CODEPOINTS.kpEnter) keyName = "enter";
+	else if (effectiveCodepoint === CODEPOINTS.space) keyName = "space";
+	else if (effectiveCodepoint === CODEPOINTS.backspace) keyName = "backspace";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.delete) keyName = "delete";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.insert) keyName = "insert";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.home) keyName = "home";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.end) keyName = "end";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageUp) keyName = "pageUp";
+	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageDown) keyName = "pageDown";
+	else if (effectiveCodepoint === ARROW_CODEPOINTS.up) keyName = "up";
+	else if (effectiveCodepoint === ARROW_CODEPOINTS.down) keyName = "down";
+	else if (effectiveCodepoint === ARROW_CODEPOINTS.left) keyName = "left";
+	else if (effectiveCodepoint === ARROW_CODEPOINTS.right) keyName = "right";
+	else if (effectiveCodepoint >= 48 && effectiveCodepoint <= 57) keyName = String.fromCharCode(effectiveCodepoint);
+	else if (effectiveCodepoint >= 97 && effectiveCodepoint <= 122) keyName = String.fromCharCode(effectiveCodepoint);
+	else if (SYMBOL_KEYS.has(String.fromCharCode(effectiveCodepoint))) keyName = String.fromCharCode(effectiveCodepoint);
+
+	if (!keyName) return undefined;
+	return formatKeyNameWithModifiers(keyName, modifier);
+}
+
 export function parseKey(data: string): string | undefined {
 	const kitty = parseKittySequence(data);
 	if (kitty) {
-		const { codepoint, baseLayoutKey, modifier } = kitty;
-		const mods: string[] = [];
-		const effectiveMod = modifier & ~LOCK_MASK;
-		const supportedModifierMask = MODIFIERS.shift | MODIFIERS.ctrl | MODIFIERS.alt;
-		if ((effectiveMod & ~supportedModifierMask) !== 0) return undefined;
-		if (effectiveMod & MODIFIERS.shift) mods.push("shift");
-		if (effectiveMod & MODIFIERS.ctrl) mods.push("ctrl");
-		if (effectiveMod & MODIFIERS.alt) mods.push("alt");
+		return formatParsedKey(kitty.codepoint, kitty.modifier, kitty.baseLayoutKey);
+	}
 
-		// Use base layout key only when codepoint is not a recognized Latin
-		// letter (a-z) or symbol (/, -, [, ;, etc.). For those, the codepoint
-		// is authoritative regardless of physical key position. This prevents
-		// remapped layouts (Dvorak, Colemak, xremap, etc.) from reporting the
-		// wrong key name based on the QWERTY physical position.
-		const isLatinLetter = codepoint >= 97 && codepoint <= 122; // a-z
-		const isKnownSymbol = SYMBOL_KEYS.has(String.fromCharCode(codepoint));
-		const effectiveCodepoint = isLatinLetter || isKnownSymbol ? codepoint : (baseLayoutKey ?? codepoint);
-
-		let keyName: string | undefined;
-		if (effectiveCodepoint === CODEPOINTS.escape) keyName = "escape";
-		else if (effectiveCodepoint === CODEPOINTS.tab) keyName = "tab";
-		else if (effectiveCodepoint === CODEPOINTS.enter || effectiveCodepoint === CODEPOINTS.kpEnter) keyName = "enter";
-		else if (effectiveCodepoint === CODEPOINTS.space) keyName = "space";
-		else if (effectiveCodepoint === CODEPOINTS.backspace) keyName = "backspace";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.delete) keyName = "delete";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.insert) keyName = "insert";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.home) keyName = "home";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.end) keyName = "end";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageUp) keyName = "pageUp";
-		else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageDown) keyName = "pageDown";
-		else if (effectiveCodepoint === ARROW_CODEPOINTS.up) keyName = "up";
-		else if (effectiveCodepoint === ARROW_CODEPOINTS.down) keyName = "down";
-		else if (effectiveCodepoint === ARROW_CODEPOINTS.left) keyName = "left";
-		else if (effectiveCodepoint === ARROW_CODEPOINTS.right) keyName = "right";
-		else if (effectiveCodepoint >= 97 && effectiveCodepoint <= 122) keyName = String.fromCharCode(effectiveCodepoint);
-		else if (SYMBOL_KEYS.has(String.fromCharCode(effectiveCodepoint)))
-			keyName = String.fromCharCode(effectiveCodepoint);
-
-		if (keyName) {
-			return mods.length > 0 ? `${mods.join("+")}+${keyName}` : keyName;
-		}
+	const modifyOtherKeys = parseModifyOtherKeysSequence(data);
+	if (modifyOtherKeys) {
+		return formatParsedKey(modifyOtherKeys.codepoint, modifyOtherKeys.modifier);
 	}
 
 	// Mode-aware legacy sequences
@@ -1112,7 +1171,8 @@ export function parseKey(data: string): string | undefined {
 	if (data === "\r" || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM") return "enter";
 	if (data === "\x00") return "ctrl+space";
 	if (data === " ") return "space";
-	if (data === "\x7f" || data === "\x08") return "backspace";
+	if (data === "\x7f") return "backspace";
+	if (data === "\x08") return "ctrl+backspace";
 	if (data === "\x1b[Z") return "shift+tab";
 	if (!_kittyProtocolActive && data === "\x1b\r") return "alt+enter";
 	if (!_kittyProtocolActive && data === "\x1b ") return "alt+space";
@@ -1124,8 +1184,8 @@ export function parseKey(data: string): string | undefined {
 		if (code >= 1 && code <= 26) {
 			return `ctrl+alt+${String.fromCharCode(code + 96)}`;
 		}
-		// Legacy alt+letter (ESC followed by letter a-z)
-		if (code >= 97 && code <= 122) {
+		// Legacy alt+letter/digit (ESC followed by the key)
+		if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) {
 			return `alt+${String.fromCharCode(code)}`;
 		}
 	}

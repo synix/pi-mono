@@ -49,19 +49,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	} = options;
 	// 解析出current working directory，默认为process.cwd()，也可以通过options传入覆盖
 	const resolvedCwd = cwd ?? process.cwd();
+	const promptCwd = resolvedCwd.replace(/\\/g, "/");
 
-	// 获取当前日期时间，格式化为可读字符串
-	const now = new Date();
-	const dateTime = now.toLocaleString("en-US", {
-		weekday: "long",
-		year: "numeric",
-		month: "long",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-		second: "2-digit",
-		timeZoneName: "short",
-	});
+	// 获取当前日期，ISO 格式 YYYY-MM-DD
+	const date = new Date().toISOString().slice(0, 10);
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
@@ -97,9 +88,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			prompt += formatSkillsForPrompt(skills);
 		}
 
-		// Add date/time and working directory last
-		prompt += `\nCurrent date and time: ${dateTime}`;
-		prompt += `\nCurrent working directory: ${resolvedCwd}`;
+		// Add date and working directory last
+		prompt += `\nCurrent date: ${date}`;
+		prompt += `\nCurrent working directory: ${promptCwd}`;
 
 		return prompt;
 	}
@@ -221,9 +212,9 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += formatSkillsForPrompt(skills);
 	}
 
-	// Add date/time and working directory last
-	prompt += `\nCurrent date and time: ${dateTime}`;
-	prompt += `\nCurrent working directory: ${resolvedCwd}`;
+	// Add date and working directory last
+	prompt += `\nCurrent date: ${date}`;
+	prompt += `\nCurrent working directory: ${promptCwd}`;
 
 	return prompt;
 }

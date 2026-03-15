@@ -36,6 +36,7 @@ export interface SessionHeader {
 }
 
 export interface NewSessionOptions {
+	id?: string;
 	parentSession?: string;
 }
 
@@ -785,7 +786,7 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		this.sessionId = randomUUID();
+		this.sessionId = options?.id ?? randomUUID();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",

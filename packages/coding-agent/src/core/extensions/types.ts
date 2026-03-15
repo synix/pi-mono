@@ -388,6 +388,12 @@ export interface ResourcesDiscoverResult {
 // Session Events
 // ============================================================================
 
+/** Fired before session manager creation to allow custom session directory resolution */
+export interface SessionDirectoryEvent {
+	type: "session_directory";
+	cwd: string;
+}
+
 /** Fired on initial session load */
 export interface SessionStartEvent {
 	type: "session_start";
@@ -472,6 +478,7 @@ export interface SessionTreeEvent {
 }
 
 export type SessionEvent =
+	| SessionDirectoryEvent
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
 	| SessionSwitchEvent
@@ -491,6 +498,12 @@ export type SessionEvent =
 export interface ContextEvent {
 	type: "context";
 	messages: AgentMessage[];
+}
+
+/** Fired before a provider request is sent. Can replace the payload. */
+export interface BeforeProviderRequestEvent {
+	type: "before_provider_request";
+	payload: unknown;
 }
 
 /** Fired after user submits prompt but before agent loop. */
@@ -853,6 +866,7 @@ export type ExtensionEvent =
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent
+	| BeforeProviderRequestEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
@@ -878,6 +892,8 @@ export interface ContextEventResult {
 	messages?: AgentMessage[];
 }
 
+export type BeforeProviderRequestEventResult = unknown;
+
 export interface ToolCallEventResult {
 	block?: boolean;
 	reason?: string;
@@ -902,6 +918,16 @@ export interface BeforeAgentStartEventResult {
 	/** Replace the system prompt for this turn. If multiple extensions return this, they are chained. */
 	systemPrompt?: string;
 }
+
+export interface SessionDirectoryResult {
+	/** Custom session directory path. If multiple extensions return this, the last one wins. */
+	sessionDir?: string;
+}
+
+/** Special startup-only handler. Unlike other events, this receives no ExtensionContext. */
+export type SessionDirectoryHandler = (
+	event: SessionDirectoryEvent,
+) => Promise<SessionDirectoryResult | undefined> | SessionDirectoryResult | undefined;
 
 export interface SessionBeforeSwitchResult {
 	cancel?: boolean;
@@ -973,6 +999,7 @@ export interface ExtensionAPI {
 	// =========================================================================
 
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
+	on(event: "session_directory", handler: SessionDirectoryHandler): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(
 		event: "session_before_switch",
@@ -990,6 +1017,10 @@ export interface ExtensionAPI {
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
+	on(
+		event: "before_provider_request",
+		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
+	): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;

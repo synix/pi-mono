@@ -17,9 +17,12 @@ import type {
 	AgentLoopConfig,
 	AgentMessage,
 	AgentTool,
+	AgentToolCall,
 	AgentToolResult,
 	StreamFn,
 } from "./types.js";
+
+export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 /**
  * Start an agent loop with a new prompt message.
@@ -34,22 +37,18 @@ export function agentLoop(
 ): EventStream<AgentEvent, AgentMessage[]> {
 	const stream = createAgentStream();
 
-	(async () => {
-		const newMessages: AgentMessage[] = [...prompts];
-		const currentContext: AgentContext = {
-			...context,
-			messages: [...context.messages, ...prompts],
-		};
-
-		stream.push({ type: "agent_start" });
-		stream.push({ type: "turn_start" });
-		for (const prompt of prompts) {
-			stream.push({ type: "message_start", message: prompt });
-			stream.push({ type: "message_end", message: prompt });
-		}
-
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
-	})();
+	void runAgentLoop(
+		prompts,
+		context,
+		config,
+		async (event) => {
+			stream.push(event);
+		},
+		signal,
+		streamFn,
+	).then((messages) => {
+		stream.end(messages);
+	});
 
 	return stream;
 }
@@ -78,17 +77,69 @@ export function agentLoopContinue(
 
 	const stream = createAgentStream();
 
-	(async () => {
-		const newMessages: AgentMessage[] = [];
-		const currentContext: AgentContext = { ...context };
-
-		stream.push({ type: "agent_start" });
-		stream.push({ type: "turn_start" });
-
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
-	})();
+	void runAgentLoopContinue(
+		context,
+		config,
+		async (event) => {
+			stream.push(event);
+		},
+		signal,
+		streamFn,
+	).then((messages) => {
+		stream.end(messages);
+	});
 
 	return stream;
+}
+
+export async function runAgentLoop(
+	prompts: AgentMessage[],
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+	streamFn?: StreamFn,
+): Promise<AgentMessage[]> {
+	const newMessages: AgentMessage[] = [...prompts];
+	const currentContext: AgentContext = {
+		...context,
+		messages: [...context.messages, ...prompts],
+	};
+
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+	for (const prompt of prompts) {
+		await emit({ type: "message_start", message: prompt });
+		await emit({ type: "message_end", message: prompt });
+	}
+
+	await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
+	return newMessages;
+}
+
+export async function runAgentLoopContinue(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+	streamFn?: StreamFn,
+): Promise<AgentMessage[]> {
+	if (context.messages.length === 0) {
+		throw new Error("Cannot continue: no messages in context");
+	}
+
+	if (context.messages[context.messages.length - 1].role === "assistant") {
+		throw new Error("Cannot continue from message role: assistant");
+	}
+
+	const newMessages: AgentMessage[] = [];
+	const currentContext: AgentContext = { ...context };
+
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+
+	await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
+	return newMessages;
 }
 
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
@@ -106,7 +157,7 @@ async function runLoop(
 	newMessages: AgentMessage[],
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
+	emit: AgentEventSink,
 	streamFn?: StreamFn,
 ): Promise<void> {
 	let firstTurn = true;
@@ -122,7 +173,7 @@ async function runLoop(
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			if (!firstTurn) {
 				// 为什么第一轮不发送? 因为在调用 runLoop() 前已经发送了 agent_start 和 turn_start 事件
-				stream.push({ type: "turn_start" });
+				await emit({ type: "turn_start" });
 			} else {
 				firstTurn = false;
 			}
@@ -130,8 +181,8 @@ async function runLoop(
 			// Process pending messages (inject before next assistant response)
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
-					stream.push({ type: "message_start", message }); // 面向UI
-					stream.push({ type: "message_end", message }); // 面向UI
+					await emit({ type: "message_start", message }); // 面向UI
+					await emit({ type: "message_end", message }); // 面向UI
 					currentContext.messages.push(message); // 面向LLM, 即上下文
 					newMessages.push(message); // 将本次agent loop新增的message存入newMessages数组, 以便在agent_end事件后一次性返回
 				}
@@ -139,13 +190,12 @@ async function runLoop(
 			}
 
 			// Stream assistant response
-			const message = await streamAssistantResponse(currentContext, config, signal, stream, streamFn);
+			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				stream.push({ type: "turn_end", message, toolResults: [] }); // 面向UI
-				stream.push({ type: "agent_end", messages: newMessages }); // 面向UI
-				stream.end(newMessages);
+				await emit({ type: "turn_end", message, toolResults: [] }); // 面向UI
+				await emit({ type: "agent_end", messages: newMessages }); // 面向UI
 				return;
 			}
 
@@ -155,13 +205,7 @@ async function runLoop(
 
 			const toolResults: ToolResultMessage[] = [];
 			if (hasMoreToolCalls) {
-				const toolExecution = await executeToolCalls(
-					currentContext.tools,
-					message,
-					signal,
-					stream,
-					config.getSteeringMessages,
-				);
+				const toolExecution = await executeToolCalls(currentContext, message, config, signal, emit);
 				toolResults.push(...toolExecution.toolResults);
 				steeringAfterTools = toolExecution.steeringMessages ?? null;
 
@@ -171,7 +215,7 @@ async function runLoop(
 				}
 			}
 
-			stream.push({ type: "turn_end", message, toolResults });
+			await emit({ type: "turn_end", message, toolResults });
 
 			// Get steering messages after turn completes
 			if (steeringAfterTools && steeringAfterTools.length > 0) {
@@ -194,8 +238,7 @@ async function runLoop(
 		break;
 	}
 
-	stream.push({ type: "agent_end", messages: newMessages });
-	stream.end(newMessages);
+	await emit({ type: "agent_end", messages: newMessages });
 }
 
 /**
@@ -206,7 +249,7 @@ async function streamAssistantResponse(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
+	emit: AgentEventSink,
 	streamFn?: StreamFn,
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
@@ -253,7 +296,7 @@ async function streamAssistantResponse(
 				context.messages.push(partialMessage);
 				addedPartial = true;
 				// 面向UI
-				stream.push({ type: "message_start", message: { ...partialMessage } });
+				await emit({ type: "message_start", message: { ...partialMessage } });
 				break;
 
 			case "text_start":
@@ -269,7 +312,7 @@ async function streamAssistantResponse(
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
 					// 面向UI
-					stream.push({
+					await emit({
 						type: "message_update",
 						assistantMessageEvent: event,
 						message: { ...partialMessage },
@@ -287,100 +330,89 @@ async function streamAssistantResponse(
 				}
 				if (!addedPartial) {
 					// 面向UI
-					stream.push({ type: "message_start", message: { ...finalMessage } });
+					await emit({ type: "message_start", message: { ...finalMessage } });
 				}
 				// 面向UI
-				stream.push({ type: "message_end", message: finalMessage });
+				await emit({ type: "message_end", message: finalMessage });
 				return finalMessage;
 			}
 		}
 	}
 
-	return await response.result();
+	const finalMessage = await response.result();
+	if (addedPartial) {
+		context.messages[context.messages.length - 1] = finalMessage;
+	} else {
+		context.messages.push(finalMessage);
+		await emit({ type: "message_start", message: { ...finalMessage } });
+	}
+	await emit({ type: "message_end", message: finalMessage });
+	return finalMessage;
 }
 
 /**
  * Execute tool calls from an assistant message.
  */
 async function executeToolCalls(
-	tools: AgentTool<any>[] | undefined,
+	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
+	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
-	getSteeringMessages?: AgentLoopConfig["getSteeringMessages"],
+	emit: AgentEventSink,
 ): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
 	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
+	if (config.toolExecution === "sequential") {
+		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	}
+	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+}
+
+async function executeToolCallsSequential(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
 	const results: ToolResultMessage[] = [];
 	let steeringMessages: AgentMessage[] | undefined;
 
 	for (let index = 0; index < toolCalls.length; index++) {
 		const toolCall = toolCalls[index];
-		const tool = tools?.find((t) => t.name === toolCall.name);
-
-		stream.push({
+		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
 			args: toolCall.arguments,
 		});
 
-		let result: AgentToolResult<any>;
-		let isError = false;
-
-		try {
-			if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
-
-			const validatedArgs = validateToolArguments(tool, toolCall);
-
-			result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
-				stream.push({
-					type: "tool_execution_update",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: toolCall.arguments,
-					partialResult,
-				});
-			});
-		} catch (e) {
-			result = {
-				content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-				details: {},
-			};
-			isError = true;
+		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
+		if (preparation.kind === "immediate") {
+			results.push(await emitToolCallOutcome(toolCall, preparation.result, preparation.isError, emit));
+		} else {
+			const executed = await executePreparedToolCall(preparation, signal, emit);
+			results.push(
+				await finalizeExecutedToolCall(
+					currentContext,
+					assistantMessage,
+					preparation,
+					executed,
+					config,
+					signal,
+					emit,
+				),
+			);
 		}
 
-		stream.push({
-			type: "tool_execution_end",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			result,
-			isError,
-		});
-
-		const toolResultMessage: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: result.content,
-			details: result.details,
-			isError,
-			timestamp: Date.now(),
-		};
-
-		results.push(toolResultMessage);
-		stream.push({ type: "message_start", message: toolResultMessage });
-		stream.push({ type: "message_end", message: toolResultMessage });
-
 		// 👇 每个工具执行完后检查 `getSteeringMessages()`，如果有消息则跳过剩余工具
-
-		// Check for steering messages - skip remaining tools if user interrupted
-		if (getSteeringMessages) {
-			const steering = await getSteeringMessages();
+		if (config.getSteeringMessages) {
+			const steering = await config.getSteeringMessages();
 			if (steering.length > 0) {
 				steeringMessages = steering;
 				const remainingCalls = toolCalls.slice(index + 1);
 				for (const skipped of remainingCalls) {
-					results.push(skipToolCall(skipped, stream));
+					results.push(await skipToolCall(skipped, emit));
 				}
 				break;
 			}
@@ -390,29 +422,241 @@ async function executeToolCalls(
 	return { toolResults: results, steeringMessages };
 }
 
-// 这里实现了工具的跳过机制
-// 被跳过的工具返回 `"Skipped due to queued user message"`
-function skipToolCall(
-	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
-): ToolResultMessage {
-	const result: AgentToolResult<any> = {
-		content: [{ type: "text", text: "Skipped due to queued user message." }],
+async function executeToolCallsParallel(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
+	const results: ToolResultMessage[] = [];
+	const runnableCalls: PreparedToolCall[] = [];
+	let steeringMessages: AgentMessage[] | undefined;
+
+	for (let index = 0; index < toolCalls.length; index++) {
+		const toolCall = toolCalls[index];
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+
+		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
+		if (preparation.kind === "immediate") {
+			results.push(await emitToolCallOutcome(toolCall, preparation.result, preparation.isError, emit));
+		} else {
+			runnableCalls.push(preparation);
+		}
+
+		if (config.getSteeringMessages) {
+			const steering = await config.getSteeringMessages();
+			if (steering.length > 0) {
+				steeringMessages = steering;
+				for (const runnable of runnableCalls) {
+					results.push(await skipToolCall(runnable.toolCall, emit, { emitStart: false }));
+				}
+				const remainingCalls = toolCalls.slice(index + 1);
+				for (const skipped of remainingCalls) {
+					results.push(await skipToolCall(skipped, emit));
+				}
+				return { toolResults: results, steeringMessages };
+			}
+		}
+	}
+
+	const runningCalls = runnableCalls.map((prepared) => ({
+		prepared,
+		execution: executePreparedToolCall(prepared, signal, emit),
+	}));
+
+	for (const running of runningCalls) {
+		const executed = await running.execution;
+		results.push(
+			await finalizeExecutedToolCall(
+				currentContext,
+				assistantMessage,
+				running.prepared,
+				executed,
+				config,
+				signal,
+				emit,
+			),
+		);
+	}
+
+	if (!steeringMessages && config.getSteeringMessages) {
+		const steering = await config.getSteeringMessages();
+		if (steering.length > 0) {
+			steeringMessages = steering;
+		}
+	}
+
+	return { toolResults: results, steeringMessages };
+}
+
+type PreparedToolCall = {
+	kind: "prepared";
+	toolCall: AgentToolCall;
+	tool: AgentTool<any>;
+	args: unknown;
+};
+
+type ImmediateToolCallOutcome = {
+	kind: "immediate";
+	result: AgentToolResult<any>;
+	isError: boolean;
+};
+
+type ExecutedToolCallOutcome = {
+	result: AgentToolResult<any>;
+	isError: boolean;
+};
+
+async function prepareToolCall(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCall: AgentToolCall,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
+	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
+	if (!tool) {
+		return {
+			kind: "immediate",
+			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			isError: true,
+		};
+	}
+
+	try {
+		const validatedArgs = validateToolArguments(tool, toolCall);
+		if (config.beforeToolCall) {
+			const beforeResult = await config.beforeToolCall(
+				{
+					assistantMessage,
+					toolCall,
+					args: validatedArgs,
+					context: currentContext,
+				},
+				signal,
+			);
+			if (beforeResult?.block) {
+				return {
+					kind: "immediate",
+					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked"),
+					isError: true,
+				};
+			}
+		}
+		return {
+			kind: "prepared",
+			toolCall,
+			tool,
+			args: validatedArgs,
+		};
+	} catch (error) {
+		return {
+			kind: "immediate",
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			isError: true,
+		};
+	}
+}
+
+async function executePreparedToolCall(
+	prepared: PreparedToolCall,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallOutcome> {
+	const updateEvents: Promise<void>[] = [];
+
+	try {
+		const result = await prepared.tool.execute(
+			prepared.toolCall.id,
+			prepared.args as never,
+			signal,
+			(partialResult) => {
+				updateEvents.push(
+					Promise.resolve(
+						emit({
+							type: "tool_execution_update",
+							toolCallId: prepared.toolCall.id,
+							toolName: prepared.toolCall.name,
+							args: prepared.toolCall.arguments,
+							partialResult,
+						}),
+					),
+				);
+			},
+		);
+		await Promise.all(updateEvents);
+		return { result, isError: false };
+	} catch (error) {
+		await Promise.all(updateEvents);
+		return {
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			isError: true,
+		};
+	}
+}
+
+async function finalizeExecutedToolCall(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	prepared: PreparedToolCall,
+	executed: ExecutedToolCallOutcome,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ToolResultMessage> {
+	let result = executed.result;
+	let isError = executed.isError;
+
+	if (config.afterToolCall) {
+		const afterResult = await config.afterToolCall(
+			{
+				assistantMessage,
+				toolCall: prepared.toolCall,
+				args: prepared.args,
+				result,
+				isError,
+				context: currentContext,
+			},
+			signal,
+		);
+		if (afterResult) {
+			result = {
+				content: afterResult.content ?? result.content,
+				details: afterResult.details ?? result.details,
+			};
+			isError = afterResult.isError ?? isError;
+		}
+	}
+
+	return await emitToolCallOutcome(prepared.toolCall, result, isError, emit);
+}
+
+function createErrorToolResult(message: string): AgentToolResult<any> {
+	return {
+		content: [{ type: "text", text: message }],
 		details: {},
 	};
+}
 
-	stream.push({
-		type: "tool_execution_start",
-		toolCallId: toolCall.id,
-		toolName: toolCall.name,
-		args: toolCall.arguments,
-	});
-	stream.push({
+async function emitToolCallOutcome(
+	toolCall: AgentToolCall,
+	result: AgentToolResult<any>,
+	isError: boolean,
+	emit: AgentEventSink,
+): Promise<ToolResultMessage> {
+	await emit({
 		type: "tool_execution_end",
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
 		result,
-		isError: true,
+		isError,
 	});
 
 	const toolResultMessage: ToolResultMessage = {
@@ -420,13 +664,31 @@ function skipToolCall(
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
 		content: result.content,
-		details: {},
-		isError: true,
+		details: result.details,
+		isError,
 		timestamp: Date.now(),
 	};
 
-	stream.push({ type: "message_start", message: toolResultMessage });
-	stream.push({ type: "message_end", message: toolResultMessage });
-
+	await emit({ type: "message_start", message: toolResultMessage });
+	await emit({ type: "message_end", message: toolResultMessage });
 	return toolResultMessage;
+}
+
+async function skipToolCall(
+	toolCall: AgentToolCall,
+	emit: AgentEventSink,
+	options?: { emitStart?: boolean },
+): Promise<ToolResultMessage> {
+	const result = createErrorToolResult("Skipped due to queued user message.");
+
+	if (options?.emitStart !== false) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+	}
+
+	return await emitToolCallOutcome(toolCall, result, true, emit);
 }

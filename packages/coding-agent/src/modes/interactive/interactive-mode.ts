@@ -453,15 +453,15 @@ export class InteractiveMode {
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
 
+		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
+		this.ui.start();
+		this.isInitialized = true;
+
 		// Initialize extensions first so resources are shown before messages
 		await this.initExtensions();
 
 		// Render initial messages AFTER showing loaded resources
 		this.renderInitialMessages();
-
-		// Start the UI
-		this.ui.start();
-		this.isInitialized = true;
 
 		// Set terminal title
 		this.updateTerminalTitle();
@@ -509,6 +509,13 @@ export class InteractiveMode {
 		this.checkForNewVersion().then((newVersion) => {
 			if (newVersion) {
 				this.showNewVersionNotification(newVersion);
+			}
+		});
+
+		// Check tmux keyboard setup asynchronously
+		this.checkTmuxKeyboardSetup().then((warning) => {
+			if (warning) {
+				this.showWarning(warning);
 			}
 		});
 
@@ -584,6 +591,50 @@ export class InteractiveMode {
 		} catch {
 			return undefined;
 		}
+	}
+
+	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
+		if (!process.env.TMUX) return undefined;
+
+		const runTmuxShow = (option: string): Promise<string | undefined> => {
+			return new Promise((resolve) => {
+				const proc = spawn("tmux", ["show", "-gv", option], {
+					stdio: ["ignore", "pipe", "ignore"],
+				});
+				let stdout = "";
+				const timer = setTimeout(() => {
+					proc.kill();
+					resolve(undefined);
+				}, 2000);
+
+				proc.stdout?.on("data", (data) => {
+					stdout += data.toString();
+				});
+				proc.on("error", () => {
+					clearTimeout(timer);
+					resolve(undefined);
+				});
+				proc.on("close", (code) => {
+					clearTimeout(timer);
+					resolve(code === 0 ? stdout.trim() : undefined);
+				});
+			});
+		};
+
+		const [extendedKeys, extendedKeysFormat] = await Promise.all([
+			runTmuxShow("extended-keys"),
+			runTmuxShow("extended-keys-format"),
+		]);
+
+		if (extendedKeys !== "on" && extendedKeys !== "always") {
+			return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
+		}
+
+		if (extendedKeysFormat === "xterm") {
+			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+		}
+
+		return undefined;
 	}
 
 	/**
@@ -1406,7 +1457,7 @@ export class InteractiveMode {
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
 			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
-			getEditorText: () => this.editor.getText(),
+			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
 			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
 			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
 			get theme() {
@@ -2770,6 +2821,7 @@ export class InteractiveMode {
 			// Spawn editor synchronously with inherited stdio for interactive editing
 			const result = spawnSync(editor, [...editorArgs, tmpFile], {
 				stdio: "inherit",
+				shell: process.platform === "win32",
 			});
 
 			// On successful exit (status 0), replace editor content
