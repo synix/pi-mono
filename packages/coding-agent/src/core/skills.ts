@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js"; // CONFIG_DIR_NAME = ".pi"，getAgentDir() 返回 ~/.pi/agent
 import { parseFrontmatter } from "../utils/frontmatter.js"; // 解析 Markdown 文件头部的 YAML frontmatter
 import type { ResourceDiagnostic } from "./diagnostics.js"; // 诊断信息类型（warning / collision 等）
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 
 /** Max name length per spec */
 const MAX_NAME_LENGTH = 64;
@@ -105,7 +106,7 @@ export interface Skill {
 	description: string; // skill description（告诉 agent 何时使用这个技能）
 	filePath: string; // SKILL.md 文件的绝对路径
 	baseDir: string; // 技能所在目录 (用于解析技能文件中的相对路径引用)
-	source: string; // 来源标识："user"（全局）、"project"（项目级）、"path"（显式指定）
+	sourceInfo: SourceInfo; // 来源信息（替代原来的 source 字符串）
 	disableModelInvocation: boolean; // 是否禁止模型自动调用
 }
 
@@ -172,6 +173,30 @@ export interface LoadSkillsFromDirOptions {
 	dir: string;
 	/** Source identifier for these skills */
 	source: string;
+}
+
+function createSkillSourceInfo(filePath: string, baseDir: string, source: string): SourceInfo {
+	switch (source) {
+		case "user":
+			return createSyntheticSourceInfo(filePath, {
+				source: "local",
+				scope: "user",
+				baseDir,
+			});
+		case "project":
+			return createSyntheticSourceInfo(filePath, {
+				source: "local",
+				scope: "project",
+				baseDir,
+			});
+		case "path":
+			return createSyntheticSourceInfo(filePath, {
+				source: "local",
+				baseDir,
+			});
+		default:
+			return createSyntheticSourceInfo(filePath, { source, baseDir });
+	}
 }
 
 /**
@@ -355,7 +380,7 @@ function loadSkillFromFile(
 				description: frontmatter.description,
 				filePath,
 				baseDir: skillDir, // 技能中的相对路径引用会基于此目录解析
-				source,
+				sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
 				disableModelInvocation: frontmatter["disable-model-invocation"] === true,
 			},
 			diagnostics,

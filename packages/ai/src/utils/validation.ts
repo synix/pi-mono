@@ -11,10 +11,22 @@ import type { Tool, ToolCall } from "../types.js";
 // Chrome extensions with Manifest V3 don't allow eval/Function constructor
 const isBrowserExtension = typeof globalThis !== "undefined" && (globalThis as any).chrome?.runtime?.id !== undefined;
 
-// Create a singleton AJV instance with formats (only if not in browser extension)
-// AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3
+function canUseRuntimeCodegen(): boolean {
+	if (isBrowserExtension) {
+		return false;
+	}
+
+	try {
+		new Function("return true;");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+// Create a singleton AJV instance with formats only when runtime code generation is available.
 let ajv: any = null;
-if (!isBrowserExtension) {
+if (canUseRuntimeCodegen()) {
 	try {
 		ajv = new Ajv({
 			allErrors: true,
@@ -23,7 +35,6 @@ if (!isBrowserExtension) {
 		});
 		addFormats(ajv);
 	} catch (_e) {
-		// AJV initialization failed (likely CSP restriction)
 		console.warn("AJV validation disabled due to CSP restrictions");
 	}
 }
@@ -51,11 +62,9 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  * @throws Error with formatted message if validation fails
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
-	// 👇 AJV(JSON Schema 验证库)在 Chrome扩展 环境下无法工作
-	// Skip validation in browser extension environment (CSP restrictions prevent AJV from working)
-	if (!ajv || isBrowserExtension) {
-		// Trust the LLM's output without validation
-		// Browser extensions can't use AJV due to Manifest V3 CSP restrictions
+	// 👇 AJV(JSON Schema 验证库)在无法动态生成代码的环境下无法工作（如 Chrome 扩展的 CSP 限制）
+	// Skip validation in environments where runtime code generation is unavailable.
+	if (!ajv || !canUseRuntimeCodegen()) {
 		return toolCall.arguments;
 	}
 
@@ -76,7 +85,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	// AJV 会在内部用 new Function() 把 schema 转为优化过的 JS 代码，返回一个 validate(data) => boolean 函数。
 	// 这也是为什么它在 Chrome扩展 里无法工作。
 
-	// Compile the schema
+	// Compile the schema.
 	const validate = ajv.compile(tool.parameters);
 
 	// 深拷贝一份参数。因为 AJV 配置了 coerceTypes: true (第22行), 下面validate()时会就地修改传入的对象(比如把字符串 "42" 转成数字 42)。

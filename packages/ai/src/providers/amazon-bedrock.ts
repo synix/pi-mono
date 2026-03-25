@@ -55,6 +55,11 @@ export interface BedrockOptions extends StreamOptions {
 	thinkingBudgets?: ThinkingBudgets;
 	/* Only supported by Claude 4.x models, see https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html#claude-messages-extended-thinking-tool-use-interleaved */
 	interleavedThinking?: boolean;
+	/** Key-value pairs attached to the inference request for cost allocation tagging.
+	 * Keys: max 64 chars, no `aws:` prefix. Values: max 256 chars. Max 50 pairs.
+	 * Tags appear in AWS Cost Explorer split cost allocation data.
+	 * @see https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html */
+	requestMetadata?: Record<string, string>;
 }
 
 type Block = (TextContent | ThinkingContent | ToolCall) & { index?: number; partialJson?: string };
@@ -153,6 +158,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 				inferenceConfig: { maxTokens: options.maxTokens, temperature: options.temperature },
 				toolConfig: convertToolConfig(context.tools, options.toolChoice),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
 			const nextCommandInput = await options?.onPayload?.(commandInput, model);
 			if (nextCommandInput !== undefined) {
@@ -430,10 +436,22 @@ function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention 
 /**
  * Check if the model supports prompt caching.
  * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models
+ *
+ * For base models and system-defined inference profiles the model ID / ARN
+ * contains the model name, so we can decide locally.
+ *
+ * For application inference profiles (whose ARNs don't contain the model name),
+ * set AWS_BEDROCK_FORCE_CACHE=1 to enable cache points.  Amazon Nova models
+ * have automatic caching and don't need explicit cache points.
  */
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean {
 	const id = model.id.toLowerCase();
-	if (!id.includes("claude")) return false;
+	if (!id.includes("claude")) {
+		// Application inference profiles don't contain the model name in the ARN.
+		// Allow users to force cache points via environment variable.
+		if (typeof process !== "undefined" && process.env.AWS_BEDROCK_FORCE_CACHE === "1") return true;
+		return false;
+	}
 	// Claude 4.x models (opus-4, sonnet-4, haiku-4)
 	if (id.includes("-4-") || id.includes("-4.")) return true;
 	// Claude 3.7 Sonnet

@@ -91,21 +91,28 @@ export function convertResponsesMessages<TApi extends Api>(
 ): ResponseInput {
 	const messages: ResponseInput = [];
 
-	const normalizeToolCallId = (id: string): string => {
-		if (!allowedToolCallProviders.has(model.provider)) return id;
-		if (!id.includes("|")) return id;
+	const normalizeIdPart = (part: string): string => {
+		const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
+		const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
+		return normalized.replace(/_+$/, "");
+	};
+
+	const buildForeignResponsesItemId = (itemId: string): string => {
+		const normalized = `fc_${shortHash(itemId)}`;
+		return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
+	};
+
+	const normalizeToolCallId = (id: string, _targetModel: Model<TApi>, source: AssistantMessage): string => {
+		if (!allowedToolCallProviders.has(model.provider)) return normalizeIdPart(id);
+		if (!id.includes("|")) return normalizeIdPart(id);
 		const [callId, itemId] = id.split("|");
-		const sanitizedCallId = callId.replace(/[^a-zA-Z0-9_-]/g, "_");
-		let sanitizedItemId = itemId.replace(/[^a-zA-Z0-9_-]/g, "_");
+		const normalizedCallId = normalizeIdPart(callId);
+		const isForeignToolCall = source.provider !== model.provider || source.api !== model.api;
+		let normalizedItemId = isForeignToolCall ? buildForeignResponsesItemId(itemId) : normalizeIdPart(itemId);
 		// OpenAI Responses API requires item id to start with "fc"
-		if (!sanitizedItemId.startsWith("fc")) {
-			sanitizedItemId = `fc_${sanitizedItemId}`;
+		if (!normalizedItemId.startsWith("fc_")) {
+			normalizedItemId = normalizeIdPart(`fc_${normalizedItemId}`);
 		}
-		// Truncate to 64 chars and strip trailing underscores (OpenAI Codex rejects them)
-		let normalizedCallId = sanitizedCallId.length > 64 ? sanitizedCallId.slice(0, 64) : sanitizedCallId;
-		let normalizedItemId = sanitizedItemId.length > 64 ? sanitizedItemId.slice(0, 64) : sanitizedItemId;
-		normalizedCallId = normalizedCallId.replace(/_+$/, "");
-		normalizedItemId = normalizedItemId.replace(/_+$/, "");
 		return `${normalizedCallId}|${normalizedItemId}`;
 	};
 
@@ -285,7 +292,9 @@ export async function processResponsesStream<TApi extends Api>(
 	const blockIndex = () => blocks.length - 1;
 
 	for await (const event of openaiStream) {
-		if (event.type === "response.output_item.added") {
+		if (event.type === "response.created") {
+			output.responseId = event.response.id;
+		} else if (event.type === "response.output_item.added") {
 			const item = event.item;
 			if (item.type === "reasoning") {
 				currentItem = item;
@@ -442,6 +451,9 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.completed") {
 			const response = event.response;
+			if (response?.id) {
+				output.responseId = response.id;
+			}
 			if (response?.usage) {
 				const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
 				output.usage = {

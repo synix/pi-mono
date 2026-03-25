@@ -11,15 +11,17 @@ import { createInterface } from "readline";
 import { type Args, parseArgs, printHelp } from "./cli/args.js";
 import { selectConfig } from "./cli/config-selector.js";
 import { processFileArguments } from "./cli/file-processor.js";
+import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
 import { selectSession } from "./cli/session-picker.js";
 import { APP_NAME, getAgentDir, getModelsPath, VERSION } from "./config.js";
 import { AuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { LoadExtensionsResult } from "./core/extensions/index.js";
-import { KeybindingsManager } from "./core/keybindings.js";
+import { migrateKeybindingsConfigFile } from "./core/keybindings.js";
 import { ModelRegistry } from "./core/model-registry.js";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { DefaultResourceLoader } from "./core/resource-loader.js";
 import { type CreateAgentSessionOptions, createAgentSession } from "./core/sdk.js";
@@ -311,28 +313,22 @@ async function handlePackageCommand(args: string[]): Promise<boolean> {
 async function prepareInitialMessage(
 	parsed: Args,
 	autoResizeImages: boolean,
+	stdinContent?: string,
 ): Promise<{
 	initialMessage?: string;
 	initialImages?: ImageContent[];
 }> {
 	if (parsed.fileArgs.length === 0) {
-		return {};
+		return buildInitialMessage({ parsed, stdinContent });
 	}
 
 	const { text, images } = await processFileArguments(parsed.fileArgs, { autoResizeImages });
-
-	let initialMessage: string;
-	if (parsed.messages.length > 0) {
-		initialMessage = text + parsed.messages[0];
-		parsed.messages.shift();
-	} else {
-		initialMessage = text;
-	}
-
-	return {
-		initialMessage,
-		initialImages: images.length > 0 ? images : undefined,
-	};
+	return buildInitialMessage({
+		parsed,
+		fileText: text,
+		fileImages: images,
+		stdinContent,
+	});
 }
 
 /** Result from resolving a session argument */
@@ -413,6 +409,32 @@ async function callSessionDirectoryHook(extensions: LoadExtensionsResult, cwd: s
 	return customSessionDir;
 }
 
+function validateForkFlags(parsed: Args): void {
+	if (!parsed.fork) return;
+
+	const conflictingFlags = [
+		parsed.session ? "--session" : undefined,
+		parsed.continue ? "--continue" : undefined,
+		parsed.resume ? "--resume" : undefined,
+		parsed.noSession ? "--no-session" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+
+	if (conflictingFlags.length > 0) {
+		console.error(chalk.red(`Error: --fork cannot be combined with ${conflictingFlags.join(", ")}`));
+		process.exit(1);
+	}
+}
+
+function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string): SessionManager {
+	try {
+		return SessionManager.forkFrom(sourcePath, cwd, sessionDir);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(1);
+	}
+}
+
 async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -426,6 +448,21 @@ async function createSessionManager(
 	let effectiveSessionDir = parsed.sessionDir;
 	if (!effectiveSessionDir) {
 		effectiveSessionDir = await callSessionDirectoryHook(extensions, cwd);
+	}
+
+	if (parsed.fork) {
+		const resolved = await resolveSessionPath(parsed.fork, cwd, effectiveSessionDir);
+
+		switch (resolved.type) {
+			case "path":
+			case "local":
+			case "global":
+				return forkSessionOrExit(resolved.path, cwd, effectiveSessionDir);
+
+			case "not_found":
+				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
+				process.exit(1);
+		}
 	}
 
 	if (parsed.session) {
@@ -444,7 +481,7 @@ async function createSessionManager(
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
 				}
-				return SessionManager.forkFrom(resolved.path, cwd, effectiveSessionDir);
+				return forkSessionOrExit(resolved.path, cwd, effectiveSessionDir);
 			}
 
 			case "not_found":
@@ -599,11 +636,15 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// Run migrations (pass cwd for project-local migrations)
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
-
 	// First pass: parse args to get --extension paths
 	const firstPass = parseArgs(args);
+	const shouldTakeOverStdout = firstPass.mode !== undefined || firstPass.print || !process.stdin.isTTY;
+	if (shouldTakeOverStdout) {
+		takeOverStdout();
+	}
+
+	// Run migrations (pass cwd for project-local migrations)
+	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
 
 	// Early load extensions to discover their CLI flags
 	const cwd = process.cwd();
@@ -638,8 +679,13 @@ export async function main(args: string[]) {
 
 	// Apply pending provider registrations from extensions immediately
 	// so they're available for model resolution before AgentSession is created
-	for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
-		modelRegistry.registerProvider(name, config);
+	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
+		try {
+			modelRegistry.registerProvider(name, config);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(chalk.red(`Extension "${extensionPath}" error: ${message}`));
+		}
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 
@@ -675,13 +721,12 @@ export async function main(args: string[]) {
 	}
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
+	let stdinContent: string | undefined;
 	if (parsed.mode !== "rpc") {
-		const stdinContent = await readPipedStdin();
+		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined) {
 			// Force print mode since interactive mode requires a TTY for keyboard input
 			parsed.print = true;
-			// Prepend stdin content to messages
-			parsed.messages.unshift(stdinContent);
 		}
 	}
 
@@ -699,13 +744,26 @@ export async function main(args: string[]) {
 		process.exit(0);
 	}
 
+	migrateKeybindingsConfigFile(agentDir);
+
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);
 	}
 
-	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, settingsManager.getImageAutoResize());
+	validateForkFlags(parsed);
+
+	const { initialMessage, initialImages } = await prepareInitialMessage(
+		parsed,
+		settingsManager.getImageAutoResize(),
+		stdinContent,
+	);
 	const isInteractive = !parsed.print && parsed.mode === undefined;
+	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
+	if (startupBenchmark && !isInteractive) {
+		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
+		process.exit(1);
+	}
 	const mode = parsed.mode || "text";
 	initTheme(settingsManager.getTheme(), isInteractive);
 
@@ -725,9 +783,6 @@ export async function main(args: string[]) {
 
 	// Handle --resume: show session picker
 	if (parsed.resume) {
-		// Initialize keybindings so session picker respects user config
-		KeybindingsManager.create();
-
 		// Compute effective session dir for resume (same logic as createSessionManager)
 		const effectiveSessionDir = parsed.sessionDir || (await callSessionDirectoryHook(extensionsResult, cwd));
 
@@ -803,8 +858,7 @@ export async function main(args: string[]) {
 			console.log(chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Ctrl+P to cycle)")}`));
 		}
 
-		printTimings();
-		const mode = new InteractiveMode(session, {
+		const interactiveMode = new InteractiveMode(session, {
 			migratedProviders,
 			modelFallbackMessage,
 			initialMessage,
@@ -812,18 +866,33 @@ export async function main(args: string[]) {
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
 		});
-		await mode.run();
+		if (startupBenchmark) {
+			await interactiveMode.init();
+			interactiveMode.stop();
+			stopThemeWatcher();
+			if (process.stdout.writableLength > 0) {
+				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+			}
+			if (process.stderr.writableLength > 0) {
+				await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
+			}
+			return;
+		}
+
+		printTimings();
+		await interactiveMode.run();
 	} else {
-		await runPrintMode(session, {
+		const exitCode = await runPrintMode(session, {
 			mode,
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
 		});
 		stopThemeWatcher();
-		if (process.stdout.writableLength > 0) {
-			await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+		restoreStdout();
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
 		}
-		process.exit(0);
+		return;
 	}
 }

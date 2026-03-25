@@ -13,8 +13,8 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
@@ -73,12 +73,14 @@ import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
-import { getLatestCompactionEntry } from "./session-manager.js";
+import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
-import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocation } from "./slash-commands.js";
+import type { SlashCommandInfo } from "./slash-commands.js";
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
-import { createAllTools } from "./tools/index.js";
+import { createAllToolDefinitions } from "./tools/index.js";
+import { createToolDefinitionFromAgentTool, wrapToolDefinition } from "./tools/tool-definition-wrapper.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -146,7 +148,12 @@ export interface AgentSessionConfig {
 	modelRegistry: ModelRegistry;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
-	/** Override base tools (useful for custom runtimes). */
+	/**
+	 * Override base tools (useful for custom runtimes).
+	 *
+	 * These are synthesized into minimal ToolDefinitions internally so AgentSession can keep
+	 * a definition-first registry even when callers provide plain AgentTool instances.
+	 */
 	baseToolsOverride?: Record<string, AgentTool>;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
@@ -196,6 +203,12 @@ export interface SessionStats {
 		total: number;
 	};
 	cost: number;
+	contextUsage?: ContextUsage;
+}
+
+interface ToolDefinitionEntry {
+	definition: ToolDefinition;
+	sourceInfo: SourceInfo;
 }
 
 // ============================================================================
@@ -262,7 +275,7 @@ export class AgentSession {
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
-	private _baseToolRegistry: Map<string, AgentTool> = new Map();
+	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
@@ -278,6 +291,7 @@ export class AgentSession {
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
+	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
@@ -539,7 +553,6 @@ export class AgentSession {
 						attempt: this._retryAttempt,
 					});
 					this._retryAttempt = 0;
-					this._resolveRetry();
 				}
 			}
 		}
@@ -560,6 +573,7 @@ export class AgentSession {
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
+			this._resolveRetry();
 			await this._checkCompaction(msg);
 		}
 	}
@@ -757,14 +771,19 @@ export class AgentSession {
 	}
 
 	/**
-	 * Get all configured tools with name, description, and parameter schema.
+	 * Get all configured tools with name, description, parameter schema, and source metadata.
 	 */
 	getAllTools(): ToolInfo[] {
-		return Array.from(this._toolRegistry.values()).map((t) => ({
-			name: t.name,
-			description: t.description,
-			parameters: t.parameters,
+		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
+			name: definition.name,
+			description: definition.description,
+			parameters: definition.parameters,
+			sourceInfo,
 		}));
+	}
+
+	getToolDefinition(name: string): ToolDefinition | undefined {
+		return this._toolDefinitions.get(name)?.definition;
 	}
 
 	/**
@@ -1135,8 +1154,9 @@ export class AgentSession {
 	}
 
 	/**
-	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * Queue a steering message while the agent is running.
+	 * Delivered after the current assistant turn finishes executing its tool calls,
+	 * before the next LLM call.
 	 * Expands skill commands and prompt templates. Errors on extension commands.
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
@@ -2199,41 +2219,41 @@ export class AgentSession {
 			: undefined;
 	}
 
+	private _refreshCurrentModelFromRegistry(): void {
+		const currentModel = this.model;
+		if (!currentModel) {
+			return;
+		}
+
+		const refreshedModel = this._modelRegistry.find(currentModel.provider, currentModel.id);
+		if (!refreshedModel || refreshedModel === currentModel) {
+			return;
+		}
+
+		this.agent.setModel(refreshedModel);
+	}
+
 	private _bindExtensionCore(runner: ExtensionRunner): void {
-		const normalizeLocation = (source: string): SlashCommandLocation | undefined => {
-			if (source === "user" || source === "project" || source === "path") {
-				return source;
-			}
-			return undefined;
-		};
-
-		const reservedBuiltins = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
-
 		const getCommands = (): SlashCommandInfo[] => {
-			const extensionCommands: SlashCommandInfo[] = runner
-				.getRegisteredCommandsWithPaths()
-				.filter(({ command }) => !reservedBuiltins.has(command.name))
-				.map(({ command, extensionPath }) => ({
-					name: command.name,
-					description: command.description,
-					source: "extension",
-					path: extensionPath,
-				}));
+			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
+				name: command.invocationName,
+				description: command.description,
+				source: "extension",
+				sourceInfo: command.sourceInfo,
+			}));
 
 			const templates: SlashCommandInfo[] = this.promptTemplates.map((template) => ({
 				name: template.name,
 				description: template.description,
 				source: "prompt",
-				location: normalizeLocation(template.source),
-				path: template.filePath,
+				sourceInfo: template.sourceInfo,
 			}));
 
 			const skills: SlashCommandInfo[] = this._resourceLoader.getSkills().skills.map((skill) => ({
 				name: `skill:${skill.name}`,
 				description: skill.description,
 				source: "skill",
-				location: normalizeLocation(skill.source),
-				path: skill.filePath,
+				sourceInfo: skill.sourceInfo,
 			}));
 
 			return [...extensionCommands, ...templates, ...skills];
@@ -2307,6 +2327,16 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 			},
+			{
+				registerProvider: (name, config) => {
+					this._modelRegistry.registerProvider(name, config);
+					this._refreshCurrentModelFromRegistry();
+				},
+				unregisterProvider: (name) => {
+					this._modelRegistry.unregisterProvider(name);
+					this._refreshCurrentModelFromRegistry();
+				},
+			},
 		);
 	}
 
@@ -2317,23 +2347,40 @@ export class AgentSession {
 		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
 		const allCustomTools = [
 			...registeredTools,
-			...this._customTools.map((def) => ({ definition: def, extensionPath: "<sdk>" })),
+			...this._customTools.map((definition) => ({
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
+			})),
 		];
+		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
+			Array.from(this._baseToolDefinitions.entries()).map(([name, definition]) => [
+				name,
+				{
+					definition,
+					sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
+				},
+			]),
+		);
+		for (const tool of allCustomTools) {
+			definitionRegistry.set(tool.definition.name, {
+				definition: tool.definition,
+				sourceInfo: tool.sourceInfo,
+			});
+		}
+		this._toolDefinitions = definitionRegistry;
 		this._toolPromptSnippets = new Map(
-			allCustomTools
-				.map((registeredTool) => {
-					const snippet = this._normalizePromptSnippet(
-						registeredTool.definition.promptSnippet ?? registeredTool.definition.description,
-					);
-					return snippet ? ([registeredTool.definition.name, snippet] as const) : undefined;
+			Array.from(definitionRegistry.values())
+				.map(({ definition }) => {
+					const snippet = this._normalizePromptSnippet(definition.promptSnippet);
+					return snippet ? ([definition.name, snippet] as const) : undefined;
 				})
 				.filter((entry): entry is readonly [string, string] => entry !== undefined),
 		);
 		this._toolPromptGuidelines = new Map(
-			allCustomTools
-				.map((registeredTool) => {
-					const guidelines = this._normalizePromptGuidelines(registeredTool.definition.promptGuidelines);
-					return guidelines.length > 0 ? ([registeredTool.definition.name, guidelines] as const) : undefined;
+			Array.from(definitionRegistry.values())
+				.map(({ definition }) => {
+					const guidelines = this._normalizePromptGuidelines(definition.promptGuidelines);
+					return guidelines.length > 0 ? ([definition.name, guidelines] as const) : undefined;
 				})
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
@@ -2341,7 +2388,12 @@ export class AgentSession {
 			? wrapRegisteredTools(allCustomTools, this._extensionRunner)
 			: [];
 
-		const toolRegistry = new Map(this._baseToolRegistry);
+		const toolRegistry = new Map(
+			Array.from(this._baseToolDefinitions.values()).map((definition) => [
+				definition.name,
+				wrapToolDefinition(definition),
+			]),
+		);
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
@@ -2373,14 +2425,21 @@ export class AgentSession {
 	}): void {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
-		const baseTools = this._baseToolsOverride
-			? this._baseToolsOverride
-			: createAllTools(this._cwd, {
+		const baseToolDefinitions = this._baseToolsOverride
+			? Object.fromEntries(
+					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
+						name,
+						createToolDefinitionFromAgentTool(tool),
+					]),
+				)
+			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix },
 				});
 
-		this._baseToolRegistry = new Map(Object.entries(baseTools).map(([name, tool]) => [name, tool as AgentTool]));
+		this._baseToolDefinitions = new Map(
+			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
+		);
 
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
@@ -2464,8 +2523,8 @@ export class AgentSession {
   			意思是 Anthropic 的服务器太忙了（请求量太大），让你稍后再试。和 429（rate limit，你个人的请求频率超限）不同，529 是服务端整体负载的问题。
 		*/
 
-		// Match: overloaded_error, rate limit, 429, 500, 502, 503, 504, service unavailable, connection errors, fetch failed, terminated, retry delay exceeded
-		return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay/i.test(
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors, fetch failed, terminated, retry delay exceeded
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay/i.test(
 			err,
 		);
 	}
@@ -3149,6 +3208,7 @@ export class AgentSession {
 				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
 			},
 			cost: totalCost,
+			contextUsage: this.getContextUsage(),
 		};
 	}
 
@@ -3207,19 +3267,78 @@ export class AgentSession {
 		const themeName = this.settingsManager.getTheme();
 
 		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
-		let toolRenderer: ToolHtmlRenderer | undefined;
-		if (this._extensionRunner) {
-			toolRenderer = createToolHtmlRenderer({
-				getToolDefinition: (name) => this._extensionRunner!.getToolDefinition(name),
-				theme,
-			});
-		}
+		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => this.getToolDefinition(name),
+			theme,
+		});
 
 		return await exportSessionToHtml(this.sessionManager, this.state, {
 			outputPath,
 			themeName,
 			toolRenderer,
 		});
+	}
+
+	/**
+	 * Export the current session branch to a JSONL file.
+	 * Writes the session header followed by all entries on the current branch path.
+	 * @param outputPath Target file path. If omitted, generates a timestamped file in cwd.
+	 * @returns The resolved output file path.
+	 */
+	exportToJsonl(outputPath?: string): string {
+		const filePath = resolve(outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+		const dir = dirname(filePath);
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: this.sessionManager.getSessionId(),
+			timestamp: new Date().toISOString(),
+			cwd: this.sessionManager.getCwd(),
+		};
+
+		const branchEntries = this.sessionManager.getBranch();
+		const lines = [JSON.stringify(header)];
+
+		// Re-chain parentIds to form a linear sequence
+		let prevId: string | null = null;
+		for (const entry of branchEntries) {
+			const linear = { ...entry, parentId: prevId };
+			lines.push(JSON.stringify(linear));
+			prevId = entry.id;
+		}
+
+		writeFileSync(filePath, `${lines.join("\n")}\n`);
+		return filePath;
+	}
+
+	/**
+	 * Import a JSONL session file.
+	 * Copies the file into the session directory and switches to it (like /resume).
+	 * @param inputPath Path to the JSONL file to import.
+	 * @returns true if the session was switched successfully.
+	 */
+	async importFromJsonl(inputPath: string): Promise<boolean> {
+		const resolved = resolve(inputPath);
+		if (!existsSync(resolved)) {
+			throw new Error(`File not found: ${resolved}`);
+		}
+
+		// Copy into the session directory so we don't modify the original
+		const sessionDir = this.sessionManager.getSessionDir();
+		if (!existsSync(sessionDir)) {
+			mkdirSync(sessionDir, { recursive: true });
+		}
+		const destPath = join(sessionDir, basename(resolved));
+		// Avoid overwriting if source and destination are the same file
+		if (resolve(destPath) !== resolved) {
+			copyFileSync(resolved, destPath);
+		}
+
+		return this.switchSession(destPath);
 	}
 
 	// =========================================================================

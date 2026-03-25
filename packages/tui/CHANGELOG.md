@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+### Added
+
+- `PI_TUI_WRITE_LOG` now accepts a directory path, creating a unique log file (`tui-<timestamp>-<pid>.log`) per instance for easier debugging of multiple pi sessions
+
+### Fixed
+
+- Fixed blockquote text color breaking after inline links (and other inline elements) due to missing style restoration prefix
+- Fixed slash-command Tab completion from immediately chaining into argument autocomplete after completing the command name, restoring flows like `/model` that submit into a selector dialog ([#2577](https://github.com/badlogic/pi-mono/issues/2577))
+
+
+## [0.62.0] - 2026-03-23
+
+### Fixed
+
+- Fixed `truncateToWidth()` to stream truncation for very large strings, keep contiguous prefixes, and always terminate truncated SGR styling safely ([#2447](https://github.com/badlogic/pi-mono/issues/2447))
+- Fixed markdown heading styling being lost after inline code spans within headings
+
+## [0.61.1] - 2026-03-20
+
+### Fixed
+
+- Fixed shared keybinding resolution to stop user overrides from evicting unrelated default shortcuts such as selector confirm and editor cursor keys ([#2455](https://github.com/badlogic/pi-mono/issues/2455))
+- Fixed Termux software keyboard height changes from forcing full-screen redraws and replaying TUI history on every toggle ([#2467](https://github.com/badlogic/pi-mono/issues/2467))
+
+## [0.61.0] - 2026-03-20
+
+### Breaking Changes
+
+- Replaced the editor-only keybinding store with a single global keybindings manager in `@mariozechner/pi-tui`. TUI keybinding ids are now namespaced: `cursorUp` -> `tui.editor.cursorUp`, `cursorDown` -> `tui.editor.cursorDown`, `cursorLeft` -> `tui.editor.cursorLeft`, `cursorRight` -> `tui.editor.cursorRight`, `cursorWordLeft` -> `tui.editor.cursorWordLeft`, `cursorWordRight` -> `tui.editor.cursorWordRight`, `cursorLineStart` -> `tui.editor.cursorLineStart`, `cursorLineEnd` -> `tui.editor.cursorLineEnd`, `jumpForward` -> `tui.editor.jumpForward`, `jumpBackward` -> `tui.editor.jumpBackward`, `pageUp` -> `tui.editor.pageUp`, `pageDown` -> `tui.editor.pageDown`, `deleteCharBackward` -> `tui.editor.deleteCharBackward`, `deleteCharForward` -> `tui.editor.deleteCharForward`, `deleteWordBackward` -> `tui.editor.deleteWordBackward`, `deleteWordForward` -> `tui.editor.deleteWordForward`, `deleteToLineStart` -> `tui.editor.deleteToLineStart`, `deleteToLineEnd` -> `tui.editor.deleteToLineEnd`, `yank` -> `tui.editor.yank`, `yankPop` -> `tui.editor.yankPop`, `undo` -> `tui.editor.undo`, `newLine` -> `tui.input.newLine`, `submit` -> `tui.input.submit`, `tab` -> `tui.input.tab`, `copy` -> `tui.input.copy`, `selectUp` -> `tui.select.up`, `selectDown` -> `tui.select.down`, `selectPageUp` -> `tui.select.pageUp`, `selectPageDown` -> `tui.select.pageDown`, `selectConfirm` -> `tui.select.confirm`, `selectCancel` -> `tui.select.cancel`. `keybindings.json` stays backward compatible because each keybinding definition maps the new internal id back to the existing public config key. Apps extend `interface Keybindings` via declaration merging, create one manager with both TUI and app definitions, then install it with `setKeybindings(...)` ([#2391](https://github.com/badlogic/pi-mono/issues/2391))
+
+### Fixed
+
+- Fixed user-defined keybindings to shadow conflicting default bindings across the shared registry, so app-level defaults no longer stay active when the same key is explicitly reassigned ([#2391](https://github.com/badlogic/pi-mono/issues/2391))
+
+## [0.60.0] - 2026-03-18
+
+### Fixed
+
+- Fixed tmux xterm `modifyOtherKeys` matching for `Backspace`, `Escape`, and `Space`, and resolved raw `\x08` backspace ambiguity by treating Windows Terminal sessions differently from legacy terminals ([#2293](https://github.com/badlogic/pi-mono/issues/2293))
+
+## [0.59.0] - 2026-03-17
+
+## [0.58.4] - 2026-03-16
+
+## [0.58.3] - 2026-03-15
+
+## [0.58.2] - 2026-03-15
+
+### Added
+
+- Added configurable `SelectList` primary column sizing via `SelectListLayoutOptions`, including custom primary-label truncation hooks ([#2154](https://github.com/badlogic/pi-mono/pull/2154) by [@markusylisiurunen](https://github.com/markusylisiurunen))
+
+### Fixed
+
+- Fixed stale scrollback remaining after full-screen redraws such as session switches by clearing the screen before wiping scrollback ([#2155](https://github.com/badlogic/pi-mono/pull/2155) by [@Perlence](https://github.com/Perlence))
+- Fixed trailing blank lines after markdown block elements when they are followed immediately by the next block or end of document ([#2152](https://github.com/badlogic/pi-mono/pull/2152) by [@markusylisiurunen](https://github.com/markusylisiurunen))
+
 ## [0.58.1] - 2026-03-14
 
 ### Fixed
