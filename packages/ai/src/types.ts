@@ -255,6 +255,12 @@ export interface Context {
 }
 
 /**
+ * AssistantMessageEvent(12种): LLM 流式请求的事件协议
+ * 表示流式请求开始/结束的3种事件: start, end/error
+ * 表示3种内容块(text/thinking/toolcall)的开始/增量输出/结束的9种事件: start/delta/end
+ */
+
+/**
  * Event protocol for AssistantMessageEventStream.
  *
  * Streams should emit `start` before partial updates, then terminate with either:

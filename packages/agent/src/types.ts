@@ -376,8 +376,11 @@ export interface AgentContext {
 }
 
 /**
- * AgentEvent 是 Agent运行过程中发出来的面向UI的事件
- * 分为4大生命周期类型(agent/turn/message/tool), 10大事件
+ * AgentEvent 是 Agent运行过程中发出来的面向UI也就是给UI消费的事件
+ * 分为10种, 4大生命周期类型(agent/turn/message/tool)
+ *
+ * message_update 事件包含了 AssistantMessageEvent 字段
+ * 即 assistantMessageEvent 字段透传了 AssistantMessageEvent(12种) 里的 9 种流式内容块事件(thinking, text, toolcall)
  */
 
 /**

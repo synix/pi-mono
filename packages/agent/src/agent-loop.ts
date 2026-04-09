@@ -161,6 +161,8 @@ async function runLoop(
 	streamFn?: StreamFn,
 ): Promise<void> {
 	let firstTurn = true;
+	// pendingMessages 有两个来源: Steering 消息 和 FollowUp 消息
+
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -180,8 +182,9 @@ async function runLoop(
 			// Process pending messages (inject before next assistant response)
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
-					await emit({ type: "message_start", message }); // 面向UI
-					await emit({ type: "message_end", message }); // 面向UI
+					// user消息是没有 message_update 的
+					await emit({ type: "message_start", message });
+					await emit({ type: "message_end", message });
 					currentContext.messages.push(message); // 面向LLM, 即上下文
 					newMessages.push(message); // 将本次agent loop新增的message存入newMessages数组, 以便在agent_end事件后一次性返回
 				}
@@ -279,7 +282,7 @@ async function streamAssistantResponse(
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 
-	// 这个for循环算是整个agent loop中最核心的部分了，负责处理LLM流式请求返回的AssistantMessageEvent事件，并根据事件类型更新上下文和发出相应的AgentEvent事件
+	// 这个for循环是整个agent loop中最核心的部分了，负责处理LLM流式请求的AssistantMessageEvent事件，并根据事件类型更新上下文、发出相应的AgentEvent事件
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
@@ -302,7 +305,7 @@ async function streamAssistantResponse(
 				if (partialMessage) {
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
-					// 面向UI
+					// 也就是说只有 assistant 消息会产生 message_update, user 消息和 toolResult 消息不是流式的，一来就是完整的，不需要中间更新
 					await emit({
 						type: "message_update",
 						assistantMessageEvent: event,
@@ -636,6 +639,7 @@ async function emitToolCallOutcome(
 		timestamp: Date.now(),
 	};
 
+	// toolResult 消息中间没有 message_update
 	await emit({ type: "message_start", message: toolResultMessage });
 	await emit({ type: "message_end", message: toolResultMessage });
 	return toolResultMessage;
