@@ -99,7 +99,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		const sessionManager = SessionManager.create(tempDir);
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = new ModelRegistry(authStorage);
+		const modelRegistry = ModelRegistry.create(authStorage);
 
 		const runtime = createExtensionRuntime();
 		const resourceLoader = {
@@ -380,7 +380,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		// sessionManager, modelRegistry, and model are now on ctx, not event
 		// Verify they're accessible via session
 		expect(typeof session.sessionManager.getEntries).toBe("function");
-		expect(typeof session.modelRegistry.getApiKey).toBe("function");
+		expect(typeof session.modelRegistry.getApiKeyAndHeaders).toBe("function");
 
 		const entries = session.sessionManager.getEntries();
 		expect(Array.isArray(entries)).toBe(true);

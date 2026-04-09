@@ -14,7 +14,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
-import type { CompactionEntry, SessionEntry } from "../session-manager.js";
+import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
 import {
 	computeFileLists,
 	createFileOps,
@@ -103,6 +103,13 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 		return createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
 	}
 	return undefined;
+}
+
+function getMessageFromEntryForCompaction(entry: SessionEntry): AgentMessage | undefined {
+	if (entry.type === "compaction") {
+		return undefined;
+	}
+	return getMessageFromEntry(entry);
 }
 
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
@@ -610,6 +617,7 @@ export async function generateSummary(
 	model: Model<any>,
 	reserveTokens: number,
 	apiKey: string,
+	headers?: Record<string, string>,
 	signal?: AbortSignal,
 	customInstructions?: string,
 	previousSummary?: string,
@@ -645,8 +653,8 @@ export async function generateSummary(
 	// 主摘要调 LLM 时传了 reasoning: "high", 让模型深度思考; 而 turn prefix 摘要 没传 reasoning.
 	// 这意味着主摘要的质量会更高(消耗更多 token), turn prefix 摘要 (generateTurnPrefixSummary) 用的是默认thinking level
 	const completionOptions = model.reasoning
-		? { maxTokens, signal, apiKey, reasoning: "high" as const }
-		: { maxTokens, signal, apiKey };
+		? { maxTokens, signal, apiKey, headers, reasoning: "high" as const }
+		: { maxTokens, signal, apiKey, headers };
 
 	const response = await completeSimple(
 		model,
@@ -707,25 +715,17 @@ export function prepareCompaction(
 		}
 	}
 
-	/*
-		prevCompactionIndex 是上次 compaction 摘要在 pathEntries 中的位置：
-		- boundaryStart = prevCompactionIndex + 1 <— 本次可被压缩的消息范围的起点（上次摘要之后的第一条消息）
-		- boundaryEnd = pathEntries.length <— 范围的终点（所有条目的末尾）
-		- usageStart = prevCompactionIndex >= 0 ? prevCompactionIndex : 0 — 用于估算 token 消耗的起点，比 boundaryStart 早一位，因为要把上次的摘要条目本身也算进去来统计压缩前的总 token 数
-
-  		简单说：boundaryStart ~ boundaryEnd 是"哪些消息可以被压缩"，usageStart ~ boundaryEnd 是"当前上下文总共有多少token"（多包含了上次摘要本身）。
-	*/
-
-	const boundaryStart = prevCompactionIndex + 1;
+	let previousSummary: string | undefined;
+	let boundaryStart = 0;
+	if (prevCompactionIndex >= 0) {
+		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
+		previousSummary = prevCompaction.summary;
+		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
+		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
+	}
 	const boundaryEnd = pathEntries.length;
 
-	const usageStart = prevCompactionIndex >= 0 ? prevCompactionIndex : 0;
-	const usageMessages: AgentMessage[] = [];
-	for (let i = usageStart; i < boundaryEnd; i++) {
-		const msg = getMessageFromEntry(pathEntries[i]);
-		if (msg) usageMessages.push(msg);
-	}
-	const tokensBefore = estimateContextTokens(usageMessages).tokens;
+	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 
@@ -742,7 +742,7 @@ export function prepareCompaction(
 	// Messages to summarize (will be discarded after summary)
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = boundaryStart; i < historyEnd; i++) {
-		const msg = getMessageFromEntry(pathEntries[i]);
+		const msg = getMessageFromEntryForCompaction(pathEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
 
@@ -750,16 +750,9 @@ export function prepareCompaction(
 	const turnPrefixMessages: AgentMessage[] = [];
 	if (cutPoint.isSplitTurn) {
 		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = getMessageFromEntry(pathEntries[i]);
+			const msg = getMessageFromEntryForCompaction(pathEntries[i]);
 			if (msg) turnPrefixMessages.push(msg);
 		}
-	}
-
-	// Get previous summary for iterative update
-	let previousSummary: string | undefined;
-	if (prevCompactionIndex >= 0) {
-		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
-		previousSummary = prevCompaction.summary;
 	}
 
 	// Extract file operations from messages and previous compaction
@@ -823,6 +816,7 @@ export async function compact(
 	preparation: CompactionPreparation,
 	model: Model<any>,
 	apiKey: string,
+	headers?: Record<string, string>,
 	customInstructions?: string,
 	signal?: AbortSignal,
 ): Promise<CompactionResult> {
@@ -849,12 +843,13 @@ export async function compact(
 						model,
 						settings.reserveTokens,
 						apiKey,
+						headers,
 						signal,
 						customInstructions,
 						previousSummary,
 					)
 				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, signal),
+			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, headers, signal),
 		]);
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
@@ -865,6 +860,7 @@ export async function compact(
 			model,
 			settings.reserveTokens,
 			apiKey,
+			headers,
 			signal,
 			customInstructions,
 			previousSummary,
@@ -895,6 +891,7 @@ async function generateTurnPrefixSummary(
 	model: Model<any>,
 	reserveTokens: number,
 	apiKey: string,
+	headers?: Record<string, string>,
 	signal?: AbortSignal,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
@@ -912,7 +909,7 @@ async function generateTurnPrefixSummary(
 	const response = await completeSimple(
 		model,
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		{ maxTokens, signal, apiKey },
+		{ maxTokens, signal, apiKey, headers },
 	);
 
 	if (response.stopReason === "error") {

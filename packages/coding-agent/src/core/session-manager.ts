@@ -162,6 +162,8 @@ export interface SessionTreeNode {
 	children: SessionTreeNode[];
 	/** Resolved label for this entry, if any */
 	label?: string;
+	/** Timestamp of the latest label change for this entry, if any */
+	labelTimestamp?: string;
 }
 
 export interface SessionContext {
@@ -732,6 +734,7 @@ export class SessionManager {
 	// targetId 是被打标签(书签功能)的那个 entry 的 id
 	// label entry 本身是树上的一个节点（有自己的 id 和 parentId），但它的作用是给另一个节点起个名字。targetId 就指向那个被命名的节点。
 	private labelsById: Map<string, string> = new Map();
+	private labelTimestampsById: Map<string, string> = new Map();
 	// fileEntries中最后一个 entry 的 id, 或者说当前 leaf 的 id
 	private leafId: string | null = null;
 
@@ -812,6 +815,7 @@ export class SessionManager {
 	private _buildIndex(): void {
 		this.byId.clear();
 		this.labelsById.clear();
+		this.labelTimestampsById.clear();
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
@@ -820,8 +824,10 @@ export class SessionManager {
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
+					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
 				} else {
 					this.labelsById.delete(entry.targetId);
+					this.labelTimestampsById.delete(entry.targetId);
 				}
 			}
 		}
@@ -1082,8 +1088,10 @@ export class SessionManager {
 		this._appendEntry(entry);
 		if (label) {
 			this.labelsById.set(targetId, label);
+			this.labelTimestampsById.set(targetId, entry.timestamp);
 		} else {
 			this.labelsById.delete(targetId);
+			this.labelTimestampsById.delete(targetId);
 		}
 		return entry.id;
 	}
@@ -1142,7 +1150,8 @@ export class SessionManager {
 		// Create nodes with resolved labels
 		for (const entry of entries) {
 			const label = this.labelsById.get(entry.id);
-			nodeMap.set(entry.id, { entry, children: [], label });
+			const labelTimestamp = this.labelTimestampsById.get(entry.id);
+			nodeMap.set(entry.id, { entry, children: [], label, labelTimestamp });
 		}
 
 		// Build tree
@@ -1261,10 +1270,10 @@ export class SessionManager {
 
 		// Collect labels for entries in the path
 		const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
-		const labelsToWrite: Array<{ targetId: string; label: string }> = [];
+		const labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }> = [];
 		for (const [targetId, label] of this.labelsById) {
 			if (pathEntryIds.has(targetId)) {
-				labelsToWrite.push({ targetId, label });
+				labelsToWrite.push({ targetId, label, timestamp: this.labelTimestampsById.get(targetId)! });
 			}
 		}
 
@@ -1273,12 +1282,12 @@ export class SessionManager {
 			const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
 			let parentId = lastEntryId;
 			const labelEntries: LabelEntry[] = [];
-			for (const { targetId, label } of labelsToWrite) {
+			for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
 				const labelEntry: LabelEntry = {
 					type: "label",
 					id: generateId(new Set(pathEntryIds)),
 					parentId,
-					timestamp: new Date().toISOString(),
+					timestamp: labelTimestamp,
 					targetId,
 					label,
 				};
@@ -1311,12 +1320,12 @@ export class SessionManager {
 		// In-memory mode: replace current session with the path + labels
 		const labelEntries: LabelEntry[] = [];
 		let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
-		for (const { targetId, label } of labelsToWrite) {
+		for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
 			const labelEntry: LabelEntry = {
 				type: "label",
 				id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
 				parentId,
-				timestamp: new Date().toISOString(),
+				timestamp: labelTimestamp,
 				targetId,
 				label,
 			};
@@ -1343,12 +1352,13 @@ export class SessionManager {
 	 * Open a specific session file.
 	 * @param path Path to session file
 	 * @param sessionDir Optional session directory for /new or /branch. If omitted, derives from file's parent.
+	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
-	static open(path: string, sessionDir?: string): SessionManager {
+	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
 		// Extract cwd from session header if possible, otherwise use process.cwd()
 		const entries = loadEntriesFromFile(path);
 		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
-		const cwd = header?.cwd ?? process.cwd();
+		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? resolve(path, "..");
 		return new SessionManager(cwd, dir, path, true);

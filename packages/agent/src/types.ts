@@ -304,50 +304,59 @@ export interface CustomAgentMessages {
 export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessages];
 
 /**
- * Agent state containing all configuration and conversation data.
+ * Public agent state.
+ *
+ * `tools` and `messages` use accessor properties so implementations can copy
+ * assigned arrays before storing them.
  */
 export interface AgentState {
+	/** System prompt sent with each model request. */
 	systemPrompt: string;
+	/** Active model used for future turns. */
 	model: Model<any>;
+	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
-	tools: AgentTool<any>[];
-	messages: AgentMessage[]; // Can include attachments + custom message types
+	/** Available tools. Assigning a new array copies the top-level array. */
+	set tools(tools: AgentTool<any>[]);
+	get tools(): AgentTool<any>[];
+	/** Conversation transcript. Assigning a new array copies the top-level array. */
+	set messages(messages: AgentMessage[]);
+	get messages(): AgentMessage[];
 	/**
-	 *  isStreaming 表示 Agent 当前是否正在从 LLM 接收流式响应。
-		┌───────┬──────────────────────────────────────────────┐
-		│  值   │                     含义                     │
-		├───────┼──────────────────────────────────────────────┤
-		│ true  │ Agent 正在调用 LLM，响应正在流式传输中       │
-		├───────┼──────────────────────────────────────────────┤
-		│ false │ Agent 空闲（初始状态、执行工具中、或已完成） │
-		└───────┴──────────────────────────────────────────────┘
-		isStreaming 只表示"正在接收 LLM 响应"，不包括工具执行阶段。
-		执行工具时 isStreaming 是 false，但 Agent仍在工作。完整的"忙碌"判断需要结合 pendingToolCalls 等其他状态。
+	 * True while the agent is processing a prompt or continuation.
+	 *
+	 * This remains true until awaited `agent_end` listeners settle.
 	 */
-	isStreaming: boolean;
-	streamMessage: AgentMessage | null;
-	pendingToolCalls: Set<string>;
-	error?: string;
+	readonly isStreaming: boolean;
+	/** Partial assistant message for the current streamed response, if any. */
+	readonly streamingMessage?: AgentMessage;
+	/** Tool call ids currently executing. */
+	readonly pendingToolCalls: ReadonlySet<string>;
+	/** Error message from the most recent failed or aborted assistant turn, if any. */
+	readonly errorMessage?: string;
 }
 
+/** Final or partial result produced by a tool. */
 export interface AgentToolResult<T> {
-	// Content blocks supporting text and images
-	content: (TextContent | ImageContent)[]; // 发回给 LLM 的内容
-	// Details to be displayed in a UI or logged
-	details: T; // 给 UI 展示的额外信息（不发给 LLM）
+	/** Text or image content returned to the model. */
+	content: (TextContent | ImageContent)[];
+	/** Arbitrary structured details for logs or UI rendering. */
+	details: T;
 }
 
-// Callback for streaming tool execution updates
+/** Callback used by tools to stream partial execution updates. */
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
-// TDetails 控制工具调用的附加输出类型, 流经整个结果链:
-// 比如一个文件搜索工具, content 是搜索结果文本 (LLM 看到),details 可以是 { matchCount: number, files: string[] } 这种结构化数据(UI 渲染用)
-// onUpdate 回调也用同样的 TDetails 类型，支持流式更新进度
-
-// AgentTool extends Tool but adds the execute function
+/** Tool definition used by the agent runtime. */
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
-	// A human-readable label for the tool to be displayed in UI
-	label: string; // 面向UI
+	/** Human-readable label for UI display. */
+	label: string;
+	/**
+	 * Optional compatibility shim for raw tool-call arguments before schema validation.
+	 * Must return an object that matches `TParameters`.
+	 */
+	prepareArguments?: (args: unknown) => Static<TParameters>;
+	/** Execute the tool call. Throw on failure instead of encoding errors in `content`. */
 	execute: (
 		toolCallId: string, // LLM 返回的 toolcall id, 用于关联 LLM工具调用 和 实际工具代码执行 的结果
 		params: Static<TParameters>, // ← 关键：TypeBox 把 Schema 变成了类型安全的 TS 对象
@@ -356,10 +365,13 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	) => Promise<AgentToolResult<TDetails>>;
 }
 
-// AgentContext is like Context but uses AgentTool
+/** Context snapshot passed into the low-level agent loop. */
 export interface AgentContext {
+	/** System prompt included with the request. */
 	systemPrompt: string;
+	/** Transcript visible to the model. */
 	messages: AgentMessage[];
+	/** Tools available for this run. */
 	tools?: AgentTool<any>[];
 }
 
@@ -370,7 +382,10 @@ export interface AgentContext {
 
 /**
  * Events emitted by the Agent for UI updates.
- * These events provide fine-grained lifecycle information for messages, turns, and tool executions.
+ *
+ * `agent_end` is the last event emitted for a run, but awaited `Agent.subscribe()`
+ * listeners for that event are still part of run settlement. The agent becomes
+ * idle only after those listeners finish.
  */
 export type AgentEvent =
 	// Agent lifecycle

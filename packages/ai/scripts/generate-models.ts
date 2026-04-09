@@ -60,6 +60,7 @@ const COPILOT_STATIC_HEADERS = {
 
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
+const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
 
 async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	try {
@@ -438,32 +439,33 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process zAi models
-		if (data.zai?.models) {
-			for (const [modelId, model] of Object.entries(data.zai.models)) {
+		if (data["zai-coding-plan"]?.models) {
+			for (const [modelId, model] of Object.entries(data["zai-coding-plan"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
-				const supportsImage = m.modalities?.input?.includes("image")
+				const supportsImage = m.modalities?.input?.includes("image");
 
 				models.push({
-				id: modelId,
-				name: m.name || modelId,
-				api: "openai-completions",
-				provider: "zai",
-				baseUrl: "https://api.z.ai/api/coding/paas/v4",
-				reasoning: m.reasoning === true,
-				input: supportsImage ? ["text", "image"] : ["text"],
-				cost: {
-					input: m.cost?.input || 0,
-					output: m.cost?.output || 0,
-					cacheRead: m.cost?.cache_read || 0,
-					cacheWrite: m.cost?.cache_write || 0,
-				},
-				compat: {
-					supportsDeveloperRole: false,
-					thinkingFormat: "zai",
-				},
-				contextWindow: m.limit?.context || 4096,
-				maxTokens: m.limit?.output || 4096,
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "zai",
+					baseUrl: "https://api.z.ai/api/coding/paas/v4",
+					reasoning: m.reasoning === true,
+					input: supportsImage ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					compat: {
+						supportsDeveloperRole: false,
+						thinkingFormat: "zai",
+						...(!ZAI_TOOL_STREAM_UNSUPPORTED_MODELS.has(modelId) ? { zaiToolStream: true } : {}),
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
 				});
 			}
 		}
@@ -777,6 +779,7 @@ async function generateModels() {
 			candidate.cost.output = 1.9;
 			candidate.cost.cacheRead = 0.119;
 		}
+
 	}
 
 
@@ -979,44 +982,26 @@ async function generateModels() {
 		});
 	}
 
-	const minimaxDirectProviders = ["minimax", "minimax-cn"] as const;
-	const minimaxAnthropicIds = new Set([
-		"MiniMax-M2",
-		"MiniMax-M2.1",
-		"MiniMax-M2.1-highspeed",
-		"MiniMax-M2.5",
-		"MiniMax-M2.5-highspeed",
-		"MiniMax-M2.7",
-		"MiniMax-M2.7-highspeed",
-	]);
+	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
 
 	for (const candidate of allModels) {
 		if (
 			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
-			minimaxAnthropicIds.has(candidate.id)
+			minimaxDirectSupportedIds.has(candidate.id)
 		) {
 			candidate.contextWindow = 204800;
 			candidate.maxTokens = 131072;
 		}
 	}
 
-	for (const provider of minimaxDirectProviders) {
-		const baseModel = allModels.find((m) => m.provider === provider && m.id === "MiniMax-M2.1");
-		if (!baseModel) continue;
-		if (allModels.some((m) => m.provider === provider && m.id === "MiniMax-M2.1-highspeed")) continue;
-
-		allModels.push({
-			...baseModel,
-			id: "MiniMax-M2.1-highspeed",
-			name: "MiniMax-M2.1-highspeed",
-			cost: {
-				...baseModel.cost,
-				input: baseModel.cost.input * 2,
-				output: baseModel.cost.output * 2,
-			},
-			contextWindow: 204800,
-			maxTokens: 131072,
-		});
+	for (let i = allModels.length - 1; i >= 0; i--) {
+		const candidate = allModels[i];
+		if (
+			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
+			!minimaxDirectSupportedIds.has(candidate.id)
+		) {
+			allModels.splice(i, 1);
+		}
 	}
 
 	// OpenAI Codex (ChatGPT OAuth) models
@@ -1394,6 +1379,18 @@ async function generateModels() {
 		{
 			id: "gemini-3.1-pro-preview",
 			name: "Gemini 3.1 Pro Preview (Vertex)",
+			api: "google-vertex",
+			provider: "google-vertex",
+			baseUrl: VERTEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		},
+		{
+			id: "gemini-3.1-pro-preview-customtools",
+			name: "Gemini 3.1 Pro Preview Custom Tools (Vertex)",
 			api: "google-vertex",
 			provider: "google-vertex",
 			baseUrl: VERTEX_BASE_URL,
