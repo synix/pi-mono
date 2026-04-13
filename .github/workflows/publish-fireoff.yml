@@ -8,10 +8,6 @@ on:
         type: choice
         options: [cjs, esm, both]
         default: both
-      build_num:
-        description: "Build number (leave empty to auto-generate: YYYYMMDDHHMMSS.<shortsha>)"
-        type: string
-        default: ""
 
 jobs:
   publish:
@@ -46,18 +42,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Resolve build number
+      - name: Generate build number
         id: build
-        env:
-          RAW: ${{ inputs.build_num }}
         run: |
-          if [ -z "$RAW" ]; then
-            num="$(date -u +%Y%m%d%H%M%S).$(git rev-parse --short=7 HEAD)"
-            echo "auto-generated build_num: $num"
-          else
-            num="$RAW"
-            echo "using supplied build_num: $num"
-          fi
+          num="$(date -u +%Y%m%d%H%M%S).$(git rev-parse --short=7 HEAD)"
+          echo "build_num=$num"
           echo "build_num=$num" >> "$GITHUB_OUTPUT"
 
       - name: Publish
