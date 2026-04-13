@@ -33,14 +33,46 @@ if (!['cjs', 'esm'].includes(format)) {
 	process.exit(1)
 }
 
+// Map upstream @mariozechner names to our @synix fork namespace at publish time.
+// Source code and workspace-linked package.json keep the @mariozechner names;
+// only the emitted tarball's manifest carries @synix + npm: aliases for deps.
+const PUBLISH_NAME_MAP = {
+	'@mariozechner/pi-ai': '@synix/pi-ai',
+	'@mariozechner/pi-agent-core': '@synix/pi-agent-core',
+}
+const FORK_REPO_URL = 'git+https://github.com/synix/pi-mono.git'
+
 const original = readFileSync(pkgPath, 'utf-8')
 const pkg = JSON.parse(original)
+
+const publishName = PUBLISH_NAME_MAP[pkg.name]
+if (!publishName) {
+	console.error(`No @synix publish mapping for ${pkg.name}`)
+	process.exit(1)
+}
 
 // Strip any prior format suffix to get the clean base version.
 const baseVersion = pkg.version.replace(/-(cjs|esm)\.\d+$/, '')
 const newVersion = `${baseVersion}-${format}.${buildNum}`
+pkg.name = publishName
 pkg.version = newVersion
 pkg.type = format === 'esm' ? 'module' : 'commonjs'
+pkg.publishConfig = { registry: 'https://npm.pkg.github.com', access: 'public' }
+if (pkg.repository?.url) pkg.repository.url = FORK_REPO_URL
+
+// Rewrite internal @mariozechner deps to npm: aliases pointing at the @synix
+// tarball of the SAME format+buildNum (the workflow publishes pi-ai before
+// pi-agent-core, so the aliased version already exists on the registry).
+// Downstream installs land the content under node_modules/@mariozechner/pi-*,
+// so the published dist's import paths keep resolving.
+for (const section of ['dependencies', 'peerDependencies']) {
+	const deps = pkg[section]
+	if (!deps) continue
+	for (const depName of Object.keys(deps)) {
+		const aliased = PUBLISH_NAME_MAP[depName]
+		if (aliased) deps[depName] = `npm:${aliased}@${newVersion}`
+	}
+}
 
 // Collapse exports to single-condition: { types, default }.
 // Original may have `import` / `require` keys; either becomes `default` here

@@ -3,14 +3,15 @@ name: Publish fireoff
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Dry run only (no publish, no counter bump)"
-        type: boolean
-        default: false
-      reset_counter:
-        description: "Reset .fireoff-version to 0 before publishing"
-        type: boolean
-        default: false
+      format:
+        description: "Which format(s) to publish"
+        type: choice
+        options: [cjs, esm, both]
+        default: both
+      build_num:
+        description: "Build number suffix (e.g. 1 → 0.66.1-cjs.1)"
+        type: string
+        default: "1"
 
 jobs:
   publish:
@@ -40,30 +41,30 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reset counter
-        if: ${{ inputs.reset_counter }}
-        run: node scripts/bump-fireoff.mjs --reset
-
-      - name: Publish
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npm run publish:fireoff:dry
-          else
-            npm run publish:fireoff
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Commit bumped counter
-        if: ${{ !inputs.dry_run }}
+      - name: Configure git (for tag pushes from publish.mjs)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet .fireoff-version; then
-            echo "no counter change to commit"
-            exit 0
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FMT: ${{ inputs.format }}
+          BUILD_NUM: ${{ inputs.build_num }}
+        run: |
+          set -euo pipefail
+          run_format() {
+            local fmt="$1"
+            echo "::group::publish pi-ai ($fmt)"
+            (cd packages/ai && node scripts/publish.mjs "$fmt" "$BUILD_NUM")
+            echo "::endgroup::"
+            echo "::group::publish pi-agent-core ($fmt)"
+            (cd packages/agent && node scripts/publish.mjs "$fmt" "$BUILD_NUM")
+            echo "::endgroup::"
+          }
+          if [[ "$FMT" == "cjs" || "$FMT" == "both" ]]; then
+            run_format cjs
           fi
-          version=$(cat .fireoff-version)
-          git add .fireoff-version
-          git commit --no-verify -m "chore(release): bump fireoff counter to $version"
-          git push origin HEAD:fire-off
+          if [[ "$FMT" == "esm" || "$FMT" == "both" ]]; then
+            run_format esm
+          fi
