@@ -9,9 +9,9 @@ on:
         options: [cjs, esm, both]
         default: both
       build_num:
-        description: "Build number suffix (e.g. 1 → 0.66.1-cjs.1)"
+        description: "Build number (leave empty to auto-generate: YYYYMMDDHHMMSS.<shortsha>)"
         type: string
-        default: "1"
+        default: ""
 
 jobs:
   publish:
@@ -46,11 +46,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Resolve build number
+        id: build
+        env:
+          RAW: ${{ inputs.build_num }}
+        run: |
+          if [ -z "$RAW" ]; then
+            num="$(date -u +%Y%m%d%H%M%S).$(git rev-parse --short=7 HEAD)"
+            echo "auto-generated build_num: $num"
+          else
+            num="$RAW"
+            echo "using supplied build_num: $num"
+          fi
+          echo "build_num=$num" >> "$GITHUB_OUTPUT"
+
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FMT: ${{ inputs.format }}
-          BUILD_NUM: ${{ inputs.build_num }}
+          BUILD_NUM: ${{ steps.build.outputs.build_num }}
         run: |
           set -euo pipefail
           run_format() {
