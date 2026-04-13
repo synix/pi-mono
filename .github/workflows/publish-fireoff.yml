@@ -1,0 +1,69 @@
+name: Publish fireoff
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (no publish, no counter bump)"
+        type: boolean
+        default: false
+      reset_counter:
+        description: "Reset .fireoff-version to 0 before publishing"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Guard branch
+        if: github.ref != 'refs/heads/fire-off'
+        run: |
+          echo "::error::This workflow only runs on the fire-off branch (got ${{ github.ref }})."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@synix"
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reset counter
+        if: ${{ inputs.reset_counter }}
+        run: node scripts/bump-fireoff.mjs --reset
+
+      - name: Publish
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm run publish:fireoff:dry
+          else
+            npm run publish:fireoff
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit bumped counter
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet .fireoff-version; then
+            echo "no counter change to commit"
+            exit 0
+          fi
+          version=$(cat .fireoff-version)
+          git add .fireoff-version
+          git commit -m "chore(release): bump fireoff counter to $version"
+          git push origin HEAD:fire-off
