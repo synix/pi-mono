@@ -65,5 +65,5 @@ jobs:
           fi
           version=$(cat .fireoff-version)
           git add .fireoff-version
-          git commit -m "chore(release): bump fireoff counter to $version"
+          git commit --no-verify -m "chore(release): bump fireoff counter to $version"
           git push origin HEAD:fire-off
