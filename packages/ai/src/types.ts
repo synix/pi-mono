@@ -114,6 +114,14 @@ export interface StreamOptions {
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
+/**
+  用户可以自定义每个 thinking level（minimal/low/medium/high/xhight）对应多少 thinking budget，覆盖 provider 内置的默认值（如 bedrock 默认 high=16384，见 packages/ai/src/providers/amazon-bedrock.ts）
+
+  "token-based providers only" 👈 暗含不同 provider 控制"思考强度"的API不一样，分为两类：
+    1. Token-based：Anthropic、Google Gemini等。API 接受一个具体数字 budget_tokens: 16384，表示"最多用这么多 token 思考"。 👉 对这类 provider thinkingBudgets 才有效。
+    2. Effort-based：OpenAI Responses (reasoning_effort: "high")、xAI 等。API 只收 "low"|"medium"|"high" 这种枚举值，根本没有"token budgets"这个概念。 👉 对这类 provider 传 thinkingBudgets 会被忽略。
+ */
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
