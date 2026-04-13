@@ -14,6 +14,8 @@
 		"build": "tsgo -p tsconfig.build.json",
 		"dev": "tsgo -p tsconfig.build.json --watch --preserveWatchOutput",
 		"test": "vitest --run",
+		"publish:cjs": "node scripts/publish.mjs cjs",
+		"publish:esm": "node scripts/publish.mjs esm",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
