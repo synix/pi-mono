@@ -222,6 +222,12 @@ export interface AssistantMessage {
 	stopReason: StopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
+	/**
+	 * Non-standard fields attached by proxies or middleware. Opaque to pi-ai —
+	 * providers never populate this directly; protocol correctness must not
+	 * depend on it.
+	 */
+	extensions?: Record<string, unknown>;
 }
 
 export interface ToolResultMessage<TDetails = any> {
