@@ -1,3 +1,4 @@
+import type { GoogleGenAIOptions } from "@google/genai";
 import type { AssistantMessageEventStream } from "./utils/event-stream.js";
 
 export type { AssistantMessageEventStream } from "./utils/event-stream.js";
@@ -107,11 +108,34 @@ export interface StreamOptions {
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
+/**
+ * Per-provider options bag passed through `streamSimple()` / `completeSimple()`.
+ * Each key targets a specific provider; unrecognized keys are ignored. This is
+ * how callers can supply provider-specific configuration (project ids, in-memory
+ * credentials, etc.) without bloating the unified options surface.
+ */
+export interface SimpleProviderOptions {
+	googleVertex?: {
+		/** GCP project id (replaces GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT env). */
+		project?: string;
+		/** GCP region (replaces GOOGLE_CLOUD_LOCATION env). */
+		location?: string;
+		/**
+		 * Auth options forwarded to `new GoogleGenAI()`. Use this to supply
+		 * in-memory credentials (e.g. `{ authClient }` from google-auth-library)
+		 * instead of relying on a GOOGLE_APPLICATION_CREDENTIALS file.
+		 */
+		googleAuthOptions?: GoogleGenAIOptions["googleAuthOptions"];
+	};
+}
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
+	/** Per-provider configuration; see {@link SimpleProviderOptions}. */
+	providerOptions?: SimpleProviderOptions;
 }
 
 // Generic StreamFunction with typed options.
