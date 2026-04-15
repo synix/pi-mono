@@ -2,6 +2,7 @@ import {
 	type GenerateContentConfig,
 	type GenerateContentParameters,
 	GoogleGenAI,
+	type GoogleGenAIOptions,
 	type ThinkingConfig,
 	ThinkingLevel,
 } from "@google/genai";
@@ -42,6 +43,12 @@ export interface GoogleVertexOptions extends StreamOptions {
 	};
 	project?: string;
 	location?: string;
+	/**
+	 * Auth options forwarded to `new GoogleGenAI()`. Use this to supply
+	 * in-memory credentials (e.g. `{ authClient }` from google-auth-library)
+	 * instead of relying on a GOOGLE_APPLICATION_CREDENTIALS file.
+	 */
+	googleAuthOptions?: GoogleGenAIOptions["googleAuthOptions"];
 }
 
 const API_VERSION = "v1";
@@ -88,7 +95,13 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
 			const client = apiKey
 				? createClientWithApiKey(model, apiKey, options?.headers)
-				: createClient(model, resolveProject(options), resolveLocation(options), options?.headers);
+				: createClient(
+						model,
+						resolveProject(options),
+						resolveLocation(options),
+						options?.headers,
+						options?.googleAuthOptions,
+					);
 			let params = buildParams(model, context, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -295,9 +308,11 @@ export const streamSimpleGoogleVertex: StreamFunction<"google-vertex", SimpleStr
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const base = buildBaseOptions(model, options, undefined);
+	const vertexOpts = options?.providerOptions?.googleVertex;
 	if (!options?.reasoning) {
 		return streamGoogleVertex(model, context, {
 			...base,
+			...vertexOpts,
 			thinking: { enabled: false },
 		} satisfies GoogleVertexOptions);
 	}
@@ -308,6 +323,7 @@ export const streamSimpleGoogleVertex: StreamFunction<"google-vertex", SimpleStr
 	if (isGemini3ProModel(geminiModel) || isGemini3FlashModel(geminiModel)) {
 		return streamGoogleVertex(model, context, {
 			...base,
+			...vertexOpts,
 			thinking: {
 				enabled: true,
 				level: getGemini3ThinkingLevel(effort, geminiModel),
@@ -317,6 +333,7 @@ export const streamSimpleGoogleVertex: StreamFunction<"google-vertex", SimpleStr
 
 	return streamGoogleVertex(model, context, {
 		...base,
+		...vertexOpts,
 		thinking: {
 			enabled: true,
 			budgetTokens: getGoogleBudget(geminiModel, effort, options.thinkingBudgets),
@@ -329,6 +346,7 @@ function createClient(
 	project: string,
 	location: string,
 	optionsHeaders?: Record<string, string>,
+	googleAuthOptions?: GoogleVertexOptions["googleAuthOptions"],
 ): GoogleGenAI {
 	const httpOptions: { headers?: Record<string, string> } = {};
 
@@ -344,6 +362,7 @@ function createClient(
 		location,
 		apiVersion: API_VERSION,
 		httpOptions: hasHttpOptions ? httpOptions : undefined,
+		googleAuthOptions,
 	});
 }
 

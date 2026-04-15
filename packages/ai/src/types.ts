@@ -1,3 +1,4 @@
+import type { GoogleGenAIOptions } from "@google/genai";
 import type { AssistantMessageEventStream } from "./utils/event-stream.js";
 
 export type { AssistantMessageEventStream } from "./utils/event-stream.js";
@@ -116,6 +117,27 @@ export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
  */
 export type ToolChoice = "auto" | "none" | "any";
 
+/**
+ * Per-provider options bag passed through `streamSimple()` / `completeSimple()`.
+ * Each key targets a specific provider; unrecognized keys are ignored. This is
+ * how callers can supply provider-specific configuration (project ids, in-memory
+ * credentials, etc.) without bloating the unified options surface.
+ */
+export interface SimpleProviderOptions {
+	googleVertex?: {
+		/** GCP project id (replaces GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT env). */
+		project?: string;
+		/** GCP region (replaces GOOGLE_CLOUD_LOCATION env). */
+		location?: string;
+		/**
+		 * Auth options forwarded to `new GoogleGenAI()`. Use this to supply
+		 * in-memory credentials (e.g. `{ authClient }` from google-auth-library)
+		 * instead of relying on a GOOGLE_APPLICATION_CREDENTIALS file.
+		 */
+		googleAuthOptions?: GoogleGenAIOptions["googleAuthOptions"];
+	};
+}
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -131,6 +153,8 @@ export interface SimpleStreamOptions extends StreamOptions {
 	 * specific tool) accept them through their own extended options.
 	 */
 	toolChoice?: ToolChoice;
+	/** Per-provider configuration; see {@link SimpleProviderOptions}. */
+	providerOptions?: SimpleProviderOptions;
 }
 
 // Generic StreamFunction with typed options.
@@ -217,6 +241,12 @@ export interface AssistantMessage {
 	stopReason: StopReason;
 	errorMessage?: string;
 	timestamp: number; // Unix timestamp in milliseconds
+	/**
+	 * Non-standard fields attached by proxies or middleware. Opaque to pi-ai —
+	 * providers never populate this directly; protocol correctness must not
+	 * depend on it.
+	 */
+	extensions?: Record<string, unknown>;
 }
 
 export interface ToolResultMessage<TDetails = any> {

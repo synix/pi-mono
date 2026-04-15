@@ -48,12 +48,22 @@ export type ProxyAssistantMessageEvent =
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse">;
 			usage: AssistantMessage["usage"];
+			/**
+			 * Non-standard fields attached by the proxy server. Propagated onto
+			 * `AssistantMessage.extensions` when the event is processed.
+			 */
+			extensions?: Record<string, unknown>;
 	  }
 	| {
 			type: "error";
 			reason: Extract<StopReason, "aborted" | "error">;
 			errorMessage?: string;
 			usage: AssistantMessage["usage"];
+			/**
+			 * Non-standard fields attached by the proxy server. Propagated onto
+			 * `AssistantMessage.extensions` when the event is processed.
+			 */
+			extensions?: Record<string, unknown>;
 	  };
 
 export interface ProxyStreamOptions extends SimpleStreamOptions {
@@ -61,6 +71,11 @@ export interface ProxyStreamOptions extends SimpleStreamOptions {
 	authToken: string;
 	/** Proxy server URL (e.g., "https://genai.example.com") */
 	proxyUrl: string;
+	/**
+	 * Path suffix appended to `proxyUrl`. Defaults to `/api/stream`. Override
+	 * when the proxy server mounts the endpoint at a different path.
+	 */
+	proxyPath?: string;
 }
 
 /**
@@ -118,7 +133,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 		}
 
 		try {
-			const response = await fetch(`${options.proxyUrl}/api/stream`, {
+			const response = await fetch(`${options.proxyUrl}${options.proxyPath ?? "/api/stream"}`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${options.authToken}`,
@@ -323,12 +338,14 @@ function processProxyEvent(
 		case "done":
 			partial.stopReason = proxyEvent.reason;
 			partial.usage = proxyEvent.usage;
+			if (proxyEvent.extensions) partial.extensions = proxyEvent.extensions;
 			return { type: "done", reason: proxyEvent.reason, message: partial };
 
 		case "error":
 			partial.stopReason = proxyEvent.reason;
 			partial.errorMessage = proxyEvent.errorMessage;
 			partial.usage = proxyEvent.usage;
+			if (proxyEvent.extensions) partial.extensions = proxyEvent.extensions;
 			return { type: "error", reason: proxyEvent.reason, error: partial };
 
 		default: {

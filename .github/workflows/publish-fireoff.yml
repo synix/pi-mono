@@ -3,14 +3,11 @@ name: Publish fireoff
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Dry run only (no publish, no counter bump)"
-        type: boolean
-        default: false
-      reset_counter:
-        description: "Reset .fireoff-version to 0 before publishing"
-        type: boolean
-        default: false
+      format:
+        description: "Which format(s) to publish"
+        type: choice
+        options: [cjs, esm, both]
+        default: both
 
 jobs:
   publish:
@@ -20,9 +17,9 @@ jobs:
       packages: write
     steps:
       - name: Guard branch
-        if: github.ref != 'refs/heads/fire-off'
+        if: github.ref_name != 'fire-off' && !startsWith(github.ref_name, 'hotfix-')
         run: |
-          echo "::error::This workflow only runs on the fire-off branch (got ${{ github.ref }})."
+          echo "::error::This workflow only runs on fire-off or hotfix-* branches (got ${{ github.ref_name }})."
           exit 1
 
       - uses: actions/checkout@v4
@@ -40,30 +37,45 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reset counter
-        if: ${{ inputs.reset_counter }}
-        run: node scripts/bump-fireoff.mjs --reset
-
-      - name: Publish
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npm run publish:fireoff:dry
-          else
-            npm run publish:fireoff
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Commit bumped counter
-        if: ${{ !inputs.dry_run }}
+      - name: Configure git (for tag pushes from publish.mjs)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet .fireoff-version; then
-            echo "no counter change to commit"
-            exit 0
+
+      - name: Generate build number
+        id: build
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          ts="$(date -u +%Y%m%d%H%M%S)"
+          sha="$(git rev-parse --short=7 HEAD)"
+          if [[ "$BRANCH" == hotfix-* ]]; then
+            num="hotfix.${ts}.${sha}"
+          else
+            num="${ts}.${sha}"
           fi
-          version=$(cat .fireoff-version)
-          git add .fireoff-version
-          git commit --no-verify -m "chore(release): bump fireoff counter to $version"
-          git push origin HEAD:fire-off
+          echo "build_num=$num"
+          echo "build_num=$num" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FMT: ${{ inputs.format }}
+          BUILD_NUM: ${{ steps.build.outputs.build_num }}
+        run: |
+          set -euo pipefail
+          run_format() {
+            local fmt="$1"
+            echo "::group::publish pi-ai ($fmt)"
+            (cd packages/ai && node scripts/publish.mjs "$fmt" "$BUILD_NUM")
+            echo "::endgroup::"
+            echo "::group::publish pi-agent-core ($fmt)"
+            (cd packages/agent && node scripts/publish.mjs "$fmt" "$BUILD_NUM")
+            echo "::endgroup::"
+          }
+          if [[ "$FMT" == "cjs" || "$FMT" == "both" ]]; then
+            run_format cjs
+          fi
+          if [[ "$FMT" == "esm" || "$FMT" == "both" ]]; then
+            run_format esm
+          fi
