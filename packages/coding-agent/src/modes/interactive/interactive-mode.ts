@@ -77,6 +77,7 @@ import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
+import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
@@ -134,6 +135,11 @@ const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
+}
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
 /**
@@ -222,6 +228,7 @@ export class InteractiveMode {
 
 	// Auto-retry state
 	private retryLoader: Loader | undefined = undefined;
+	private retryCountdown: CountdownTimer | undefined = undefined;
 	private retryEscapeHandler?: () => void;
 
 	// Messages queued while compaction is running
@@ -767,18 +774,39 @@ export class InteractiveMode {
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
-			// Fresh install - just record the version, don't show changelog
+			// Fresh install - record the version, send telemetry, don't show changelog
 			this.settingsManager.setLastChangelogVersion(VERSION);
+			this.reportInstallTelemetry(VERSION);
 			return undefined;
-		} else {
-			const newEntries = getNewEntries(entries, lastVersion);
-			if (newEntries.length > 0) {
-				this.settingsManager.setLastChangelogVersion(VERSION);
-				return newEntries.map((e) => e.content).join("\n\n");
-			}
+		}
+
+		const newEntries = getNewEntries(entries, lastVersion);
+		if (newEntries.length > 0) {
+			this.settingsManager.setLastChangelogVersion(VERSION);
+			this.reportInstallTelemetry(VERSION);
+			return newEntries.map((e) => e.content).join("\n\n");
 		}
 
 		return undefined;
+	}
+
+	private reportInstallTelemetry(version: string): void {
+		if (process.env.PI_OFFLINE) {
+			return;
+		}
+
+		const telemetryEnv = process.env.PI_TELEMETRY;
+		const telemetryEnabled =
+			telemetryEnv !== undefined ? isTruthyEnvFlag(telemetryEnv) : this.settingsManager.getEnableInstallTelemetry();
+		if (!telemetryEnabled) {
+			return;
+		}
+
+		void fetch(`https://pi.dev/install?version=${encodeURIComponent(version)}`, {
+			signal: AbortSignal.timeout(5000),
+		})
+			.then(() => undefined)
+			.catch(() => undefined);
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -1237,6 +1265,7 @@ export class InteractiveMode {
 						this.editor.setText(result.editorText);
 					}
 					this.showStatus("Navigated to selected point");
+					void this.flushCompactionQueue({ willRetry: false });
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath) => {
@@ -2310,6 +2339,10 @@ export class InteractiveMode {
 					this.defaultEditor.onEscape = this.retryEscapeHandler;
 					this.retryEscapeHandler = undefined;
 				}
+				if (this.retryCountdown) {
+					this.retryCountdown.dispose();
+					this.retryCountdown = undefined;
+				}
 				if (this.retryLoader) {
 					this.retryLoader.stop();
 					this.retryLoader = undefined;
@@ -2566,12 +2599,24 @@ export class InteractiveMode {
 				};
 				// Show retry indicator
 				this.statusContainer.clear();
-				const delaySeconds = Math.round(event.delayMs / 1000);
+				this.retryCountdown?.dispose();
+				const retryMessage = (seconds: number) =>
+					`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} to cancel)`;
 				this.retryLoader = new Loader(
 					this.ui,
 					(spinner) => theme.fg("warning", spinner),
 					(text) => theme.fg("muted", text),
-					`Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s... (${keyText("app.interrupt")} to cancel)`,
+					retryMessage(Math.ceil(event.delayMs / 1000)),
+				);
+				this.retryCountdown = new CountdownTimer(
+					event.delayMs,
+					this.ui,
+					(seconds) => {
+						this.retryLoader?.setMessage(retryMessage(seconds));
+					},
+					() => {
+						this.retryCountdown = undefined;
+					},
 				);
 				this.statusContainer.addChild(this.retryLoader);
 				this.ui.requestRender();
@@ -2583,6 +2628,10 @@ export class InteractiveMode {
 				if (this.retryEscapeHandler) {
 					this.defaultEditor.onEscape = this.retryEscapeHandler;
 					this.retryEscapeHandler = undefined;
+				}
+				if (this.retryCountdown) {
+					this.retryCountdown.dispose();
+					this.retryCountdown = undefined;
 				}
 				// Stop loader
 				if (this.retryLoader) {
@@ -3351,6 +3400,7 @@ export class InteractiveMode {
 					availableThemes: getAvailableThemes(),
 					hideThinkingBlock: this.hideThinkingBlock,
 					collapseChangelog: this.settingsManager.getCollapseChangelog(),
+					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
 					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 					treeFilterMode: this.settingsManager.getTreeFilterMode(),
 					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
@@ -3425,6 +3475,9 @@ export class InteractiveMode {
 					},
 					onCollapseChangelogChange: (collapsed) => {
 						this.settingsManager.setCollapseChangelog(collapsed);
+					},
+					onEnableInstallTelemetryChange: (enabled) => {
+						this.settingsManager.setEnableInstallTelemetry(enabled);
 					},
 					onQuietStartupChange: (enabled) => {
 						this.settingsManager.setQuietStartup(enabled);
@@ -3831,6 +3884,7 @@ export class InteractiveMode {
 							this.editor.setText(result.editorText);
 						}
 						this.showStatus("Navigated to selected point");
+						void this.flushCompactionQueue({ willRetry: false });
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
