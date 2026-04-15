@@ -71,6 +71,11 @@ export interface ProxyStreamOptions extends SimpleStreamOptions {
 	authToken: string;
 	/** Proxy server URL (e.g., "https://genai.example.com") */
 	proxyUrl: string;
+	/**
+	 * Path suffix appended to `proxyUrl`. Defaults to `/api/stream`. Override
+	 * when the proxy server mounts the endpoint at a different path.
+	 */
+	proxyPath?: string;
 }
 
 /**
@@ -128,7 +133,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 		}
 
 		try {
-			const response = await fetch(`${options.proxyUrl}/api/stream`, {
+			const response = await fetch(`${options.proxyUrl}${options.proxyPath ?? "/api/stream"}`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${options.authToken}`,
