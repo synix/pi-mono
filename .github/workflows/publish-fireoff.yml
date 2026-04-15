@@ -17,9 +17,9 @@ jobs:
       packages: write
     steps:
       - name: Guard branch
-        if: github.ref != 'refs/heads/fire-off'
+        if: github.ref_name != 'fire-off' && !startsWith(github.ref_name, 'hotfix-')
         run: |
-          echo "::error::This workflow only runs on the fire-off branch (got ${{ github.ref }})."
+          echo "::error::This workflow only runs on fire-off or hotfix-* branches (got ${{ github.ref_name }})."
           exit 1
 
       - uses: actions/checkout@v4
@@ -44,8 +44,16 @@ jobs:
 
       - name: Generate build number
         id: build
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
-          num="$(date -u +%Y%m%d%H%M%S).$(git rev-parse --short=7 HEAD)"
+          ts="$(date -u +%Y%m%d%H%M%S)"
+          sha="$(git rev-parse --short=7 HEAD)"
+          if [[ "$BRANCH" == hotfix-* ]]; then
+            num="hotfix.${ts}.${sha}"
+          else
+            num="${ts}.${sha}"
+          fi
           echo "build_num=$num"
           echo "build_num=$num" >> "$GITHUB_OUTPUT"
 
