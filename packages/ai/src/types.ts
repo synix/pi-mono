@@ -107,11 +107,30 @@ export interface StreamOptions {
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
+/**
+ * Controls whether the model may use tools in its response.
+ *
+ * - `"auto"`: model decides (default)
+ * - `"none"`: model must not call tools, only generate text
+ * - `"any"`: model must call at least one tool
+ */
+export type ToolChoice = "auto" | "none" | "any";
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
+	/**
+	 * Controls whether the model may use tools in its response.
+	 * - `"auto"`: model decides (default behavior when omitted)
+	 * - `"none"`: model must not call tools, only generate text
+	 * - `"any"`: model must call at least one tool
+	 *
+	 * Providers that support additional tool-choice modes (e.g., forcing a
+	 * specific tool) accept them through their own extended options.
+	 */
+	toolChoice?: ToolChoice;
 }
 
 // Generic StreamFunction with typed options.
