@@ -109,6 +109,15 @@ export interface StreamOptions {
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
 
 /**
+ * Controls whether the model may use tools in its response.
+ *
+ * - `"auto"`: model decides (default)
+ * - `"none"`: model must not call tools, only generate text
+ * - `"any"`: model must call at least one tool
+ */
+export type ToolChoice = "auto" | "none" | "any";
+
+/**
  * Per-provider options bag passed through `streamSimple()` / `completeSimple()`.
  * Each key targets a specific provider; unrecognized keys are ignored. This is
  * how callers can supply provider-specific configuration (project ids, in-memory
@@ -134,6 +143,16 @@ export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
+	/**
+	 * Controls whether the model may use tools in its response.
+	 * - `"auto"`: model decides (default behavior when omitted)
+	 * - `"none"`: model must not call tools, only generate text
+	 * - `"any"`: model must call at least one tool
+	 *
+	 * Providers that support additional tool-choice modes (e.g., forcing a
+	 * specific tool) accept them through their own extended options.
+	 */
+	toolChoice?: ToolChoice;
 	/** Per-provider configuration; see {@link SimpleProviderOptions}. */
 	providerOptions?: SimpleProviderOptions;
 }

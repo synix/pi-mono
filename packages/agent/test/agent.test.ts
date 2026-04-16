@@ -435,6 +435,45 @@ describe("Agent", () => {
 		expect(responseCount).toBe(2);
 	});
 
+	it("should default toolChoice to auto", () => {
+		const agent = new Agent();
+		expect(agent.state.toolChoice).toBe("auto");
+	});
+
+	it("should accept toolChoice in initial state", () => {
+		const agent = new Agent({ initialState: { toolChoice: "none" } });
+		expect(agent.state.toolChoice).toBe("none");
+	});
+
+	it("forwards toolChoice to streamFn options", async () => {
+		let receivedToolChoice: string | undefined;
+		const agent = new Agent({
+			streamFn: (_model, _context, options) => {
+				receivedToolChoice = options?.toolChoice;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message = createAssistantMessage("ok");
+					stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			},
+		});
+
+		// Default "auto" should not be forwarded (sent as undefined)
+		await agent.prompt("hello");
+		expect(receivedToolChoice).toBeUndefined();
+
+		// Setting to "none" should be forwarded
+		agent.state.toolChoice = "none";
+		await agent.prompt("hello again");
+		expect(receivedToolChoice).toBe("none");
+
+		// Setting back to "auto" should stop forwarding
+		agent.state.toolChoice = "auto";
+		await agent.prompt("once more");
+		expect(receivedToolChoice).toBeUndefined();
+	});
+
 	it("forwards sessionId to streamFn options", async () => {
 		let receivedSessionId: string | undefined;
 		const agent = new Agent({

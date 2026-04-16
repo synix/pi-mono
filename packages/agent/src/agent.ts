@@ -71,6 +71,7 @@ function createMutableAgentState(
 		systemPrompt: initialState?.systemPrompt ?? "",
 		model: initialState?.model ?? DEFAULT_MODEL,
 		thinkingLevel: initialState?.thinkingLevel ?? "off",
+		toolChoice: initialState?.toolChoice ?? "auto",
 		get tools() {
 			return tools;
 		},
@@ -409,6 +410,7 @@ export class Agent {
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
+			toolChoice: this._state.toolChoice === "auto" ? undefined : this._state.toolChoice,
 			sessionId: this.sessionId,
 			onPayload: this.onPayload,
 			transport: this.transport,

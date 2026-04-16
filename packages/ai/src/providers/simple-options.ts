@@ -1,6 +1,10 @@
-import type { Api, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel } from "../types.js";
+import type { Api, Model, SimpleStreamOptions, ThinkingBudgets, ThinkingLevel } from "../types.js";
 
-export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOptions, apiKey?: string): StreamOptions {
+export function buildBaseOptions(
+	model: Model<Api>,
+	options?: SimpleStreamOptions,
+	apiKey?: string,
+): SimpleStreamOptions {
 	return {
 		temperature: options?.temperature,
 		maxTokens: options?.maxTokens || Math.min(model.maxTokens, 32000),
@@ -12,6 +16,7 @@ export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOption
 		onPayload: options?.onPayload,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
 		metadata: options?.metadata,
+		toolChoice: options?.toolChoice === "auto" ? undefined : options?.toolChoice,
 	};
 }
 
