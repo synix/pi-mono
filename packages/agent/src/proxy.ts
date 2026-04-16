@@ -67,7 +67,7 @@ export type ProxyAssistantMessageEvent =
 	  };
 
 export interface ProxyStreamOptions extends SimpleStreamOptions {
-	/** Auth token for the proxy server */
+	/** Auth token for the proxy server — sent as `Authorization: Bearer ${authToken}`. */
 	authToken: string;
 	/** Proxy server URL (e.g., "https://genai.example.com") */
 	proxyUrl: string;
@@ -76,6 +76,14 @@ export interface ProxyStreamOptions extends SimpleStreamOptions {
 	 * when the proxy server mounts the endpoint at a different path.
 	 */
 	proxyPath?: string;
+	/**
+	 * Extra HTTP headers to attach to the proxy request, merged after
+	 * `Authorization` and `Content-Type` (callers can override them if they
+	 * really mean to). Useful when the proxy server expects a
+	 * deployment-specific header — e.g. a legacy custom auth header — without
+	 * forcing every consumer to re-wrap `streamProxy`.
+	 */
+	extraHeaders?: Record<string, string>;
 }
 
 /**
@@ -138,6 +146,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 				headers: {
 					Authorization: `Bearer ${options.authToken}`,
 					"Content-Type": "application/json",
+					...(options.extraHeaders ?? {}),
 				},
 				body: JSON.stringify({
 					model,
