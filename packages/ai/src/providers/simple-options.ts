@@ -16,7 +16,7 @@ export function buildBaseOptions(
 		onPayload: options?.onPayload,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
 		metadata: options?.metadata,
-		toolChoice: options?.toolChoice,
+		toolChoice: options?.toolChoice === "auto" ? undefined : options?.toolChoice,
 	};
 }
 
