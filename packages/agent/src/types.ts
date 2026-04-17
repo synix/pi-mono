@@ -8,6 +8,7 @@ import type {
 	streamSimple,
 	TextContent,
 	Tool,
+	ToolChoice,
 	ToolResultMessage,
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
@@ -257,6 +258,16 @@ export interface AgentState {
 	model: Model<any>;
 	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
+	/**
+	 * Controls whether the model may use tools in the next LLM call.
+	 * - `"auto"` (default): model decides whether to call tools
+	 * - `"none"`: model must not call tools, only generate text
+	 * - `"any"`: model must call at least one tool
+	 *
+	 * Unlike setting `tools = []`, this preserves the tool definitions in
+	 * the prompt, keeping provider-side prompt caches valid.
+	 */
+	toolChoice: ToolChoice;
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
