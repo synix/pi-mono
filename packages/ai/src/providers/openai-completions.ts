@@ -421,10 +421,14 @@ function buildParams(model: Model<"openai-completions">, context: Context, optio
 		(params as any).chat_template_kwargs = { enable_thinking: !!options?.reasoningEffort };
 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
-		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
+		// `exclude: false` tells OpenRouter to stream reasoning content in `delta.reasoning`;
+		// without it the default is to hide reasoning text even when effort is set.
+		// See https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#controlling-reasoning-tokens
+		const openRouterParams = params as typeof params & { reasoning?: { effort?: string; exclude?: boolean } };
 		if (options?.reasoningEffort) {
 			openRouterParams.reasoning = {
 				effort: mapReasoningEffort(options.reasoningEffort, compat.reasoningEffortMap),
+				exclude: false,
 			};
 		} else {
 			openRouterParams.reasoning = { effort: "none" };
