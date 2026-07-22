@@ -210,6 +210,14 @@ export interface ToolCall {
 export interface Usage {
 	input: number;
 	output: number;
+	/**
+	 * Reasoning/thinking tokens the provider reported for this turn — a subset of `output`, populated
+	 * where the provider surfaces it (otherwise `undefined`). Lets a biller that meters the provider's
+	 * real completion separate reasoning back out of `output`: OpenAI-compatible endpoints report
+	 * `completion_tokens` already inclusive of reasoning, so `output` (= completion_tokens + reasoning)
+	 * needs `reasoning` subtracted to recover the billable completion count.
+	 */
+	reasoning?: number;
 	cacheRead: number;
 	cacheWrite: number;
 	totalTokens: number;
