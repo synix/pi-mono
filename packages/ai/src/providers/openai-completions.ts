@@ -752,7 +752,7 @@ function parseChunkUsage(
 	const promptTokens = rawUsage.prompt_tokens || 0;
 	const reportedCachedTokens = rawUsage.prompt_tokens_details?.cached_tokens || 0;
 	const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
-	const reasoningTokens = rawUsage.completion_tokens_details?.reasoning_tokens || 0;
+	const reasoningTokens = rawUsage.completion_tokens_details?.reasoning_tokens;
 
 	// Normalize to pi-ai semantics:
 	// - cacheRead: hits from cache created by previous requests only
@@ -765,10 +765,15 @@ function parseChunkUsage(
 	const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
 	// Compute totalTokens ourselves since we add reasoning_tokens to output
 	// and some providers (e.g., Groq) don't include them in total_tokens
-	const outputTokens = (rawUsage.completion_tokens || 0) + reasoningTokens;
+	const outputTokens = (rawUsage.completion_tokens || 0) + (reasoningTokens ?? 0);
 	const usage: AssistantMessage["usage"] = {
 		input,
 		output: outputTokens,
+		// Raw reasoning tokens, or undefined when the provider omits completion_tokens_details — so a
+		// consumer can tell "not reported" from a reported 0. `output` above re-adds reasoning on top of
+		// completion_tokens, but OpenAI-compatible providers already fold reasoning INTO completion_tokens,
+		// so a biller metering the provider's real completion subtracts this (?? 0) back out of `output`.
+		reasoning: reasoningTokens,
 		cacheRead: cacheReadTokens,
 		cacheWrite: cacheWriteTokens,
 		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,

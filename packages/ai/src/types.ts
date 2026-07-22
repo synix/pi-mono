@@ -210,6 +210,14 @@ export interface ToolCall {
 export interface Usage {
 	input: number;
 	output: number;
+	/**
+	 * Reasoning/thinking tokens the provider reported for this turn, or `undefined` when it doesn't
+	 * surface a breakdown. Provider-reported and optional; how it relates to `output` is
+	 * provider-specific. Notably, OpenAI-compatible completion usage reports `completion_tokens` already
+	 * inclusive of reasoning and the adapter re-adds it on top, so there `output === completion_tokens +
+	 * reasoning` and a biller wanting the real completion count uses `output - (reasoning ?? 0)`.
+	 */
+	reasoning?: number;
 	cacheRead: number;
 	cacheWrite: number;
 	totalTokens: number;
