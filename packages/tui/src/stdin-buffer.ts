@@ -181,6 +181,14 @@ function isCompleteApcSequence(data: string): "complete" | "incomplete" {
 /**
  * Split accumulated buffer into complete sequences
  */
+function parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | undefined {
+	const match = sequence.match(/^\x1b\[(\d+)(?::\d*)?(?::\d+)?u$/);
+	if (!match) return undefined;
+
+	const codepoint = parseInt(match[1]!, 10);
+	return codepoint >= 32 ? codepoint : undefined;
+}
+
 function extractCompleteSequences(buffer: string): { sequences: string[]; remainder: string } {
 	const sequences: string[] = [];
 	let pos = 0;
@@ -197,6 +205,29 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 				const status = isCompleteSequence(candidate);
 
 				if (status === "complete") {
+					// WezTerm with enable_kitty_keyboard sends the Escape key press as a
+					// raw '\x1b' byte (simple text path in encode_kitty, ignoring
+					// DISAMBIGUATE_ESCAPE_CODES) and the release as a full Kitty CSI-u
+					// sequence. These arrive concatenated as '\x1b\x1b[27;...u'.
+					// The buffer would normally treat '\x1b\x1b' as a complete meta-key
+					// sequence (ESC + single char), leaving '[27;...u' to be typed as
+					// plain text. If the character immediately following '\x1b\x1b'
+					// would begin a new escape sequence, emit only the first ESC and
+					// restart from the second.
+					if (candidate === "\x1b\x1b") {
+						const nextChar = remaining[seqEnd];
+						if (
+							nextChar === "[" || // CSI
+							nextChar === "]" || // OSC
+							nextChar === "O" || // SS3
+							nextChar === "P" || // DCS
+							nextChar === "_" // APC
+						) {
+							sequences.push(ESC);
+							pos += 1;
+							break;
+						}
+					}
 					sequences.push(candidate);
 					pos += seqEnd;
 					break;
@@ -246,6 +277,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private readonly timeoutMs: number;
 	private pasteMode: boolean = false;
 	private pasteBuffer: string = "";
+	private pendingKittyPrintableCodepoint: number | undefined;
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
@@ -274,7 +306,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (str.length === 0 && this.buffer.length === 0) {
-			this.emit("data", "");
+			this.emitDataSequence("");
 			return;
 		}
 
@@ -291,6 +323,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 				this.pasteMode = false;
 				this.pasteBuffer = "";
+				this.pendingKittyPrintableCodepoint = undefined;
 
 				this.emit("paste", pastedContent);
 
@@ -307,10 +340,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				const beforePaste = this.buffer.slice(0, startIndex);
 				const result = extractCompleteSequences(beforePaste);
 				for (const sequence of result.sequences) {
-					this.emit("data", sequence);
+					this.emitDataSequence(sequence);
 				}
 			}
 
+			this.pendingKittyPrintableCodepoint = undefined;
 			this.buffer = this.buffer.slice(startIndex + BRACKETED_PASTE_START.length);
 			this.pasteMode = true;
 			this.pasteBuffer = this.buffer;
@@ -323,6 +357,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 				this.pasteMode = false;
 				this.pasteBuffer = "";
+				this.pendingKittyPrintableCodepoint = undefined;
 
 				this.emit("paste", pastedContent);
 
@@ -337,7 +372,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.buffer = result.remainder;
 
 		for (const sequence of result.sequences) {
-			this.emit("data", sequence);
+			this.emitDataSequence(sequence);
 		}
 
 		if (this.buffer.length > 0) {
@@ -345,10 +380,21 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				const flushed = this.flush();
 
 				for (const sequence of flushed) {
-					this.emit("data", sequence);
+					this.emitDataSequence(sequence);
 				}
 			}, this.timeoutMs);
 		}
+	}
+
+	private emitDataSequence(sequence: string): void {
+		const rawCodepoint = sequence.length === 1 ? sequence.codePointAt(0) : undefined;
+		if (rawCodepoint !== undefined && rawCodepoint === this.pendingKittyPrintableCodepoint) {
+			this.pendingKittyPrintableCodepoint = undefined;
+			return;
+		}
+
+		this.pendingKittyPrintableCodepoint = parseUnmodifiedKittyPrintableCodepoint(sequence);
+		this.emit("data", sequence);
 	}
 
 	flush(): string[] {
@@ -363,6 +409,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 		const sequences = [this.buffer];
 		this.buffer = "";
+		this.pendingKittyPrintableCodepoint = undefined;
 		return sequences;
 	}
 
@@ -374,6 +421,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.buffer = "";
 		this.pasteMode = false;
 		this.pasteBuffer = "";
+		this.pendingKittyPrintableCodepoint = undefined;
 	}
 
 	getBuffer(): string {

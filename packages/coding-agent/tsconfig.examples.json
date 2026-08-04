@@ -3,11 +3,11 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"paths": {
-			"@mariozechner/pi-coding-agent": ["./src/index.ts"],
-			"@mariozechner/pi-coding-agent/hooks": ["./src/core/hooks/index.ts"],
-			"@mariozechner/pi-tui": ["../tui/src/index.ts"],
-			"@mariozechner/pi-ai": ["../ai/src/index.ts"],
-			"@sinclair/typebox": ["../../node_modules/@sinclair/typebox"]
+			"@earendil-works/pi-coding-agent": ["./src/index.ts"],
+			"@earendil-works/pi-coding-agent/hooks": ["./src/core/hooks/index.ts"],
+			"@earendil-works/pi-tui": ["../tui/src/index.ts"],
+			"@earendil-works/pi-ai": ["../ai/src/index.ts"],
+			"typebox": ["../../node_modules/typebox"]
 		},
 		"skipLibCheck": true
 	},

@@ -2,26 +2,33 @@
 /**
  * Release script for pi-mono
  *
- * Usage: node scripts/release.mjs <major|minor|patch>
+ * Usage:
+ *   node scripts/release.mjs <major|minor|patch>
+ *   node scripts/release.mjs <x.y.z>
  *
  * Steps:
  * 1. Check for uncommitted changes
- * 2. Bump version via npm run version:xxx
+ * 2. Bump version via npm run version:xxx or set an explicit version
  * 3. Update CHANGELOG.md files: [Unreleased] -> [version] - date
- * 4. Commit and tag
- * 5. Publish to npm
- * 6. Add new [Unreleased] section to changelogs
- * 7. Commit
+ * 4. Regenerate release artifacts
+ * 5. Run checks and tests
+ * 6. Commit and tag the release
+ * 7. Add new [Unreleased] section to changelogs
+ * 8. Commit next-cycle changelog updates
+ * 9. Push main and the tag to trigger CI publishing
  */
 
-import { execSync } from "child_process";
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "fs";
-import { join } from "path";
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { findPackageDirectories } from "./package-workspaces.mjs";
 
-const BUMP_TYPE = process.argv[2];
+const RELEASE_TARGET = process.argv[2];
+const BUMP_TYPES = new Set(["major", "minor", "patch"]);
+const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
-if (!["major", "minor", "patch"].includes(BUMP_TYPE)) {
-	console.error("Usage: node scripts/release.mjs <major|minor|patch>");
+if (!RELEASE_TARGET || (!BUMP_TYPES.has(RELEASE_TARGET) && !SEMVER_RE.test(RELEASE_TARGET))) {
+	console.error("Usage: node scripts/release.mjs <major|minor|patch|x.y.z>");
 	process.exit(1);
 }
 
@@ -43,11 +50,92 @@ function getVersion() {
 	return pkg.version;
 }
 
+function compareVersions(a, b) {
+	const aParts = a.split(".").map(Number);
+	const bParts = b.split(".").map(Number);
+
+	for (let i = 0; i < 3; i++) {
+		const diff = (aParts[i] || 0) - (bParts[i] || 0);
+		if (diff !== 0) {
+			return diff;
+		}
+	}
+
+	return 0;
+}
+
+function shellQuote(value) {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function removeStaleWorkspaceLockEntries() {
+	const workspaceVersions = new Map(
+		findPackageDirectories()
+			.map((directory) => JSON.parse(readFileSync(join(directory, "package.json"), "utf8")))
+			.filter((pkg) => pkg.private !== true)
+			.map((pkg) => [pkg.name, pkg.version]),
+	);
+	const lockPath = "package-lock.json";
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+	let removed = 0;
+
+	for (const [path, pkg] of Object.entries(lock.packages)) {
+		if (!path.startsWith("packages/") || pkg.link === true) {
+			continue;
+		}
+		for (const [name, version] of workspaceVersions) {
+			if (path.endsWith(`/node_modules/${name}`) && pkg.version !== version) {
+				delete lock.packages[path];
+				removed++;
+				break;
+			}
+		}
+	}
+
+	if (removed > 0) {
+		writeFileSync(lockPath, `${JSON.stringify(lock, null, "\t")}\n`);
+		console.log(`Removed ${removed} stale workspace package lock ${removed === 1 ? "entry" : "entries"}.`);
+	}
+}
+
+function stageChangedFiles() {
+	const output = run("git ls-files -m -o -d --exclude-standard", { silent: true });
+	const paths = [...new Set((output || "").split("\n").map((line) => line.trim()).filter(Boolean))];
+	if (paths.length === 0) {
+		return;
+	}
+
+	run(`git add -- ${paths.map(shellQuote).join(" ")}`);
+}
+
+function bumpOrSetVersion(target) {
+	const currentVersion = getVersion();
+
+	if (BUMP_TYPES.has(target)) {
+		console.log(`Bumping version (${target})...`);
+		run(`npm run version:${target}`);
+	} else {
+		if (compareVersions(target, currentVersion) <= 0) {
+			console.error(`Error: explicit version ${target} must be greater than current version ${currentVersion}.`);
+			process.exit(1);
+		}
+
+		console.log(`Setting explicit version (${target})...`);
+		run(`npm version ${target} -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts`);
+	}
+
+	// npm version can temporarily install the previous workspace versions before
+	// sync-versions updates inter-package ranges. Remove those stale lock entries,
+	// refresh the lockfile, then hydrate from the final dependency graph.
+	removeStaleWorkspaceLockEntries();
+	run("npm install --package-lock-only --ignore-scripts");
+	run("npm ci --ignore-scripts");
+	return getVersion();
+}
+
 function getChangelogs() {
-	const packagesDir = "packages";
-	const packages = readdirSync(packagesDir);
-	return packages
-		.map((pkg) => join(packagesDir, pkg, "CHANGELOG.md"))
+	return findPackageDirectories()
+		.map((directory) => join(directory, "CHANGELOG.md"))
 		.filter((path) => existsSync(path));
 }
 
@@ -102,10 +190,8 @@ if (status && status.trim()) {
 }
 console.log("  Working directory clean\n");
 
-// 2. Bump version
-console.log(`Bumping version (${BUMP_TYPE})...`);
-run(`npm run version:${BUMP_TYPE}`);
-const version = getVersion();
+// 2. Bump or set version
+const version = bumpOrSetVersion(RELEASE_TARGET);
 console.log(`  New version: ${version}\n`);
 
 // 3. Update changelogs
@@ -113,33 +199,49 @@ console.log("Updating CHANGELOG.md files...");
 updateChangelogsForRelease(version);
 console.log();
 
-// 4. Commit and tag
+// 4. Regenerate release artifacts
+console.log("Regenerating release artifacts...");
+run("npm run generate:models");
+run("npm run check:model-data");
+run("npm run shrinkwrap:coding-agent");
+run("npm run install-lock:coding-agent");
+console.log();
+
+// 5. Run checks and tests
+console.log("Running checks...");
+run("npm run check");
+console.log();
+
+console.log("Building packages for tests...");
+run("npm run build:offline");
+console.log();
+
+console.log("Running tests...");
+run("./test.sh");
+console.log();
+
+// 6. Commit and tag
 console.log("Committing and tagging...");
-run("git add .");
+stageChangedFiles();
 run(`git commit -m "Release v${version}"`);
 run(`git tag v${version}`);
 console.log();
 
-// 5. Publish
-console.log("Publishing to npm...");
-run("npm run publish");
-console.log();
-
-// 6. Add new [Unreleased] sections
+// 7. Add new [Unreleased] sections
 console.log("Adding [Unreleased] sections for next cycle...");
 addUnreleasedSection();
 console.log();
 
-// 7. Commit
+// 8. Commit
 console.log("Committing changelog updates...");
-run("git add .");
+stageChangedFiles();
 run(`git commit -m "Add [Unreleased] section for next cycle"`);
 console.log();
 
-// 8. Push
+// 9. Push
 console.log("Pushing to remote...");
 run("git push origin main");
 run(`git push origin v${version}`);
 console.log();
 
-console.log(`=== Released v${version} ===`);
+console.log(`=== Prepared release v${version}; CI publishing starts after the tag push ===`);

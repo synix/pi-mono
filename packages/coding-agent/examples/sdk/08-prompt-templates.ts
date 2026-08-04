@@ -8,9 +8,10 @@ import {
 	createAgentSession,
 	createSyntheticSourceInfo,
 	DefaultResourceLoader,
+	getAgentDir,
 	type PromptTemplate,
 	SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 // Define custom templates
 const deployTemplate: PromptTemplate = {
@@ -26,6 +27,8 @@ const deployTemplate: PromptTemplate = {
 };
 
 const loader = new DefaultResourceLoader({
+	cwd: process.cwd(),
+	agentDir: getAgentDir(),
 	promptsOverride: (current) => ({
 		prompts: [...current.prompts, deployTemplate],
 		diagnostics: current.diagnostics,
@@ -40,9 +43,9 @@ for (const template of discovered) {
 	console.log(`  /${template.name}: ${template.description}`);
 }
 
-await createAgentSession({
+const { session } = await createAgentSession({
 	resourceLoader: loader,
 	sessionManager: SessionManager.inMemory(),
 });
-
 console.log(`Session created with ${discovered.length + 1} prompt templates`);
+session.dispose();

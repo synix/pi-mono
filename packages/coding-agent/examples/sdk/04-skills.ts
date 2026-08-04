@@ -9,9 +9,10 @@ import {
 	createAgentSession,
 	createSyntheticSourceInfo,
 	DefaultResourceLoader,
+	getAgentDir,
 	SessionManager,
 	type Skill,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 // Or define custom skills inline
 const customSkill: Skill = {
@@ -24,6 +25,8 @@ const customSkill: Skill = {
 };
 
 const loader = new DefaultResourceLoader({
+	cwd: process.cwd(),
+	agentDir: getAgentDir(),
 	skillsOverride: (current) => {
 		const filteredSkills = current.skills.filter((s) => s.name.includes("browser") || s.name.includes("search"));
 		return {
@@ -44,9 +47,9 @@ if (diagnostics.length > 0) {
 	console.log("Warnings:", diagnostics);
 }
 
-await createAgentSession({
+const { session } = await createAgentSession({
 	resourceLoader: loader,
 	sessionManager: SessionManager.inMemory(),
 });
-
 console.log("Session created with filtered skills");
+session.dispose();

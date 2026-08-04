@@ -1,11 +1,11 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import ignore from "ignore";
-import { homedir } from "os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
-import { parseFrontmatter } from "../utils/frontmatter.js";
-import type { ResourceDiagnostic } from "./diagnostics.js";
-import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
+import { basename, dirname, join, relative, resolve, sep } from "path";
+import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
+import { parseFrontmatter } from "../utils/frontmatter.ts";
+import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /** Max name length per spec */
 const MAX_NAME_LENGTH = 64;
@@ -89,12 +89,8 @@ export interface LoadSkillsResult {
  * Validate skill name per Agent Skills spec.
  * Returns array of validation error messages (empty if valid).
  */
-function validateName(name: string, parentDirName: string): string[] {
+function validateName(name: string): string[] {
 	const errors: string[] = [];
-
-	if (name !== parentDirName) {
-		errors.push(`name "${name}" does not match parent directory "${parentDirName}"`);
-	}
 
 	if (name.length > MAX_NAME_LENGTH) {
 		errors.push(`name exceeds ${MAX_NAME_LENGTH} characters (${name.length})`);
@@ -300,7 +296,7 @@ function loadSkillFromFile(
 		const name = frontmatter.name || parentDirName;
 
 		// Validate name
-		const nameErrors = validateName(name, parentDirName);
+		const nameErrors = validateName(name);
 		for (const error of nameErrors) {
 			diagnostics.push({ type: "warning", message: error, path: filePath });
 		}
@@ -374,38 +370,26 @@ function escapeXml(str: string): string {
 }
 
 export interface LoadSkillsOptions {
-	/** Working directory for project-local skills. Default: process.cwd() */
-	cwd?: string;
-	/** Agent config directory for global skills. Default: ~/.pi/agent */
-	agentDir?: string;
+	/** Working directory for project-local skills. */
+	cwd: string;
+	/** Agent config directory for global skills. */
+	agentDir: string;
 	/** Explicit skill paths (files or directories) */
-	skillPaths?: string[];
-	/** Include default skills directories. Default: true */
-	includeDefaults?: boolean;
-}
-
-function normalizePath(input: string): string {
-	const trimmed = input.trim();
-	if (trimmed === "~") return homedir();
-	if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
-	if (trimmed.startsWith("~")) return join(homedir(), trimmed.slice(1));
-	return trimmed;
-}
-
-function resolveSkillPath(p: string, cwd: string): string {
-	const normalized = normalizePath(p);
-	return isAbsolute(normalized) ? normalized : resolve(cwd, normalized);
+	skillPaths: string[];
+	/** Include default skills directories. */
+	includeDefaults: boolean;
 }
 
 /**
  * Load skills from all configured locations.
  * Returns skills and any validation diagnostics.
  */
-export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
-	const { cwd = process.cwd(), agentDir, skillPaths = [], includeDefaults = true } = options;
+export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
+	const { agentDir, skillPaths, includeDefaults } = options;
 
 	// Resolve agentDir - if not provided, use default from config
-	const resolvedAgentDir = agentDir ?? getAgentDir();
+	const resolvedCwd = resolvePath(options.cwd);
+	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
 
 	const skillMap = new Map<string, Skill>();
 	const realPathSet = new Set<string>();
@@ -416,12 +400,7 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 		allDiagnostics.push(...result.diagnostics);
 		for (const skill of result.skills) {
 			// Resolve symlinks to detect duplicate files
-			let realPath: string;
-			try {
-				realPath = realpathSync(skill.filePath);
-			} catch {
-				realPath = skill.filePath;
-			}
+			const realPath = canonicalizePath(skill.filePath);
 
 			// Skip silently if we've already loaded this exact file (via symlink)
 			if (realPathSet.has(realPath)) {
@@ -450,11 +429,11 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 
 	if (includeDefaults) {
 		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
-		addSkills(loadSkillsFromDirInternal(resolve(cwd, CONFIG_DIR_NAME, "skills"), "project", true));
+		addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", true));
 	}
 
 	const userSkillsDir = join(resolvedAgentDir, "skills");
-	const projectSkillsDir = resolve(cwd, CONFIG_DIR_NAME, "skills");
+	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
@@ -474,7 +453,7 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 	};
 
 	for (const rawPath of skillPaths) {
-		const resolvedPath = resolveSkillPath(rawPath, cwd);
+		const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
 		if (!existsSync(resolvedPath)) {
 			allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
 			continue;
