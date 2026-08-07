@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed OpenAI Responses usage dropping cache writes: `cache_write_tokens` was hardcoded to `0` and the written tokens stayed inside `input`, so from GPT-5.6 onwards (the first family to bill cache writes, at 1.25x the uncached input rate) they were both unreported and charged at the input rate. `input_tokens` is now split into its three disjoint slices — uncached, cached and written — each surfaced on its own `Usage` field.
+
+### Changed
+
+- Bumped `openai` from 6.26.0 to 6.49.0; `ResponseUsage.InputTokensDetails` only gained `cache_write_tokens` in the later releases.
+
 ## [0.67.2] - 2026-04-14
 
 ### Fixed

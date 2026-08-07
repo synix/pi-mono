@@ -479,12 +479,19 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 			if (response?.usage) {
 				const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
+				// Billed from GPT-5.6 onwards, where a cache write costs 1.25x the uncached input rate;
+				// earlier families write for free and report 0.
+				const cacheWriteTokens = response.usage.input_tokens_details?.cache_write_tokens || 0;
 				output.usage = {
-					// OpenAI includes cached tokens in input_tokens, so subtract to get non-cached input
-					input: (response.usage.input_tokens || 0) - cachedTokens,
+					// input_tokens is the whole prompt: uncached + cached + written, three disjoint slices
+					// each billed at its own rate. Subtract both details to leave only the uncached part —
+					// keeping either in `input` would bill those tokens twice. Verified against the API:
+					// the same prompt reports (cached 0, written N) cold and (cached N, written 0) warm,
+					// and input_tokens - cached - written lands on the same small remainder both times.
+					input: Math.max(0, (response.usage.input_tokens || 0) - cachedTokens - cacheWriteTokens),
 					output: response.usage.output_tokens || 0,
 					cacheRead: cachedTokens,
-					cacheWrite: 0,
+					cacheWrite: cacheWriteTokens,
 					totalTokens: response.usage.total_tokens || 0,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				};
