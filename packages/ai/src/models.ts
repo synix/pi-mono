@@ -46,14 +46,27 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 }
 
 /**
+ * GPT families whose ids accept reasoning.effort "xhigh".
+ *
+ * Verified against /v1/responses: every id in these families accepts "xhigh", and the value is a
+ * genuinely higher tier rather than an alias for "high" (reasoning token counts rise monotonically
+ * from low through xhigh). Families not listed here reject it with a 400 `unsupported_value`.
+ *
+ * A shipped family that is missing from this list is NOT an error the caller can see: clampReasoning
+ * silently rewrites "xhigh" to "high", so the top tier is lost with no warning. Add new families as
+ * they ship, and probe before adding rather than assuming.
+ */
+const XHIGH_GPT_FAMILIES = ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6"];
+
+/**
  * Check if a model supports xhigh thinking level.
  *
  * Supported today:
- * - GPT-5.2 / GPT-5.3 / GPT-5.4 model families
+ * - The GPT families in XHIGH_GPT_FAMILIES
  * - Opus 4.6 models (xhigh maps to adaptive effort "max" on Anthropic-compatible providers)
  */
 export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
-	if (model.id.includes("gpt-5.2") || model.id.includes("gpt-5.3") || model.id.includes("gpt-5.4")) {
+	if (XHIGH_GPT_FAMILIES.some((family) => model.id.includes(family))) {
 		return true;
 	}
 
