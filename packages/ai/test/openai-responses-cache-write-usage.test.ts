@@ -62,7 +62,7 @@ async function* completedWith(details: {
 				output_tokens_details: { reasoning_tokens: 0 },
 			},
 		},
-	} as unknown as ResponseStreamEvent;
+	} as ResponseStreamEvent;
 }
 
 async function run(details: Parameters<typeof completedWith>[0]): Promise<AssistantMessage> {

@@ -50,7 +50,7 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
  *
  * Verified against /v1/responses: every id in these families accepts "xhigh", and the value is a
  * genuinely higher tier rather than an alias for "high" (reasoning token counts rise monotonically
- * from low through xhigh). Families not listed here 400 with `unsupported_value`.
+ * from low through xhigh). Families not listed here reject it with a 400 `unsupported_value`.
  *
  * A shipped family that is missing from this list is NOT an error the caller can see: clampReasoning
  * silently rewrites "xhigh" to "high", so the top tier is lost with no warning. Add new families as
